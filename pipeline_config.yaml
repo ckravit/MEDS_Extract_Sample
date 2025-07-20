@@ -1,0 +1,26 @@
+input_dir: raw_data
+output_dir: MEDS_output
+
+description: This pipeline extracts a dataset to MEDS format.
+
+etl_metadata:
+  dataset_name: SYNTHETIC
+  dataset_version: 1.0
+
+event_conversion_config_fp: event_config.yaml
+# The shards mapping is stored in the root of the final output directory.
+shards_map_fp: ${output_dir}/metadata/.shards.json
+
+# Used if you need to load input files from cloud storage.
+cloud_io_storage_options: {}
+
+stages:
+  - shard_events:
+      data_input_dir: ${input_dir}/${input_dir}
+  - split_and_shard_subjects
+  - convert_to_subject_sharded
+  - convert_to_MEDS_events
+  - merge_to_MEDS_cohort
+  - extract_code_metadata
+  - finalize_MEDS_metadata
+  - finalize_MEDS_data
