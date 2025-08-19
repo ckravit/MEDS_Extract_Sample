@@ -1,57 +1,4 @@
 category,example
-error_flag,Invalid
-error_flag,cancel
-error_flag,CANCELED
-error_flag,INVALID
-inequality,>89
-inequality,<0.2
-inequality,<0.04
-inequality,<1.0
-inequality,<0.10
-inequality,<0.3
-inequality,<10
-inequality,<=5.0
-inequality,<20
-inequality,>1000
-detected,Detected
-detected,Reactive
-detected,NONE DETECTED
-detected,DETECTED
-detected,None Detected
-detected,REACTIVE
-detected,NO DNA DETECTED
-detected,NONE DETECTED mcg/mL
-detected,Reactive cellular changes.
-unit_suffix,2L
-unit_suffix,1L
-unit_suffix,3L
-unit_suffix,2LNC
-unit_suffix,4L
-unit_suffix,6L
-unit_suffix,3LNC
-unit_suffix,1LNC
-unit_suffix,2L/min
-unit_suffix,5L
-not_detected,Not Detected
-not_detected,Nonreactive
-not_detected,NOT DETECTED
-not_detected,NONREACTIVE
-not_detected,Not detected
-not_detected,2019-nCoV Not Detected
-not_detected,COVID NOT DETECTED
-not_detected,ND
-not_detected,ND 6L
-not_detected,Non reactive
-negative,Negative
-negative,NEGATIVE
-negative,Negative for Intraepithelial Lesion or Malignancy.
-negative,neg
-negative,Negative for Intraepithelial Lesion or Malignancy
-negative,Negative: No eosinophils seen.
-negative,Few Lactose Negative Gram Negative Rod
-negative,Moderate Lactose Negative Gram Negative Rod
-negative,Negative by antigen detection assay.
-negative,Lactose Negative Gram Negative Rod
 percentage,30%
 percentage,40%
 percentage,50%
@@ -62,6 +9,50 @@ percentage,100%
 percentage,70%
 percentage,45%
 percentage,80%
+placeholder,...
+placeholder,""
+presence_absence,Present
+presence_absence,No Growth at 1:1000 dilution
+presence_absence,No Significant Growth
+presence_absence,NO GROWTH AT 1:1000 DILUTION
+presence_absence,NO SIGNIFICANT GROWTH
+presence_absence,No Growth Undiluted
+presence_absence,Lactobacillus present in large numbers. Probable Contaminant.
+presence_absence,NO GROWTH UNDILUTED
+presence_absence,No Growth at 1:1000 dilution to date
+comment_or_report,See Comment
+comment_or_report,Reference Intervals
+comment_or_report,Test Not Performed
+comment_or_report,See Note
+comment_or_report,NOTE
+comment_or_report,SEE NOTE
+comment_or_report,TEST NOT PERFORMED
+comment_or_report,Reference Interval
+comment_or_report,TEST NOT PERFORMED.
+comment_or_report,RN to note
+detected,Detected
+detected,Reactive
+detected,NONE DETECTED
+detected,DETECTED
+detected,None Detected
+detected,REACTIVE
+detected,NO DNA DETECTED
+detected,NONE DETECTED mcg/mL
+detected,Reactive cellular changes.
+inequality,>89
+inequality,<0.2
+inequality,<0.04
+inequality,<1.0
+inequality,<0.10
+inequality,<0.3
+inequality,<10
+inequality,<=5.0
+inequality,<20
+inequality,>1000
+ordinal_plus,1+
+ordinal_plus,2+
+ordinal_plus,3+
+ordinal_plus,4+
 positive,Positive
 positive,POSITIVE
 positive,Lactose Positive Gram Negative Rod
@@ -72,18 +63,6 @@ positive,"30,000 CFU/mL Lactose Positive Gram Negative Rod"
 positive,Low positive <=5%
 positive,Rare Lactose Positive Gram Negative Rod
 positive,"40,000 CFU/mL Lactose Positive Gram Negative Rod"
-placeholder,...
-placeholder,""
-other,See Comment
-other,1+
-other,Reference Intervals
-other,2+
-other,3+
-other,Present
-other,No Growth at 1:1000 dilution
-other,No Significant Growth
-other,4+
-other,Test Not Performed
 trace,Trace
 trace,TRACE
 trace,trace
@@ -93,3 +72,47 @@ trace,Trace-Lysed
 trace,TRACE (0.25 g/dL)
 trace,traCE
 trace,Hemolyzed Trace
+other,Candida albicans
+other,"Normal respiratory tract flora isolated. No clinically significant Staphylococcus aureus/MRSA, or Pseudomonas aeruginosa isolated."
+other,Contamination suspected; Submit new specimen
+other,: ...
+other,=<5.0
+other,Normal respiratory tract flora isolated
+other,NO METHICILLIN-RESISTANT STAPH AUREUS ISOLATED
+other,Staphylococcus epidermidis
+other,INDETERMINATE-IMPAIRED
+other,Candida glabrata
+negative,Negative
+negative,NEGATIVE
+negative,Negative for Intraepithelial Lesion or Malignancy.
+negative,neg
+negative,Negative for Intraepithelial Lesion or Malignancy
+negative,Negative: No eosinophils seen.
+negative,Few Lactose Negative Gram Negative Rod
+negative,Moderate Lactose Negative Gram Negative Rod
+negative,Negative by antigen detection assay.
+negative,Lactose Negative Gram Negative Rod
+unit_suffix,2L
+unit_suffix,1L
+unit_suffix,3L
+unit_suffix,2LNC
+unit_suffix,4L
+unit_suffix,6L
+unit_suffix,3LNC
+unit_suffix,1LNC
+unit_suffix,2L/min
+unit_suffix,5L
+error_flag,Invalid
+error_flag,cancel
+error_flag,CANCELED
+error_flag,INVALID
+not_detected,Not Detected
+not_detected,Nonreactive
+not_detected,NOT DETECTED
+not_detected,NONREACTIVE
+not_detected,Not detected
+not_detected,2019-nCoV Not Detected
+not_detected,COVID NOT DETECTED
+not_detected,ND
+not_detected,Non reactive
+not_detected,ND 6L
