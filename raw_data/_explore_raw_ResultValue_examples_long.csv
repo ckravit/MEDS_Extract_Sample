@@ -1,0 +1,95 @@
+category,example
+error_flag,Invalid
+error_flag,cancel
+error_flag,CANCELED
+error_flag,INVALID
+inequality,>89
+inequality,<0.2
+inequality,<0.04
+inequality,<1.0
+inequality,<0.10
+inequality,<0.3
+inequality,<10
+inequality,<=5.0
+inequality,<20
+inequality,>1000
+detected,Detected
+detected,Reactive
+detected,NONE DETECTED
+detected,DETECTED
+detected,None Detected
+detected,REACTIVE
+detected,NO DNA DETECTED
+detected,NONE DETECTED mcg/mL
+detected,Reactive cellular changes.
+unit_suffix,2L
+unit_suffix,1L
+unit_suffix,3L
+unit_suffix,2LNC
+unit_suffix,4L
+unit_suffix,6L
+unit_suffix,3LNC
+unit_suffix,1LNC
+unit_suffix,2L/min
+unit_suffix,5L
+not_detected,Not Detected
+not_detected,Nonreactive
+not_detected,NOT DETECTED
+not_detected,NONREACTIVE
+not_detected,Not detected
+not_detected,2019-nCoV Not Detected
+not_detected,COVID NOT DETECTED
+not_detected,ND
+not_detected,ND 6L
+not_detected,Non reactive
+negative,Negative
+negative,NEGATIVE
+negative,Negative for Intraepithelial Lesion or Malignancy.
+negative,neg
+negative,Negative for Intraepithelial Lesion or Malignancy
+negative,Negative: No eosinophils seen.
+negative,Few Lactose Negative Gram Negative Rod
+negative,Moderate Lactose Negative Gram Negative Rod
+negative,Negative by antigen detection assay.
+negative,Lactose Negative Gram Negative Rod
+percentage,30%
+percentage,40%
+percentage,50%
+percentage,60%
+percentage,25%
+percentage,35%
+percentage,100%
+percentage,70%
+percentage,45%
+percentage,80%
+positive,Positive
+positive,POSITIVE
+positive,Lactose Positive Gram Negative Rod
+positive,Few Lactose Positive Gram Negative Rod
+positive,"20,000 CFU/mL Lactose Positive Gram Negative Rod"
+positive,"10,000 CFU/mL Lactose Positive Gram Negative Rod"
+positive,"30,000 CFU/mL Lactose Positive Gram Negative Rod"
+positive,Low positive <=5%
+positive,Rare Lactose Positive Gram Negative Rod
+positive,"40,000 CFU/mL Lactose Positive Gram Negative Rod"
+placeholder,...
+placeholder,""
+other,See Comment
+other,1+
+other,Reference Intervals
+other,2+
+other,3+
+other,Present
+other,No Growth at 1:1000 dilution
+other,No Significant Growth
+other,4+
+other,Test Not Performed
+trace,Trace
+trace,TRACE
+trace,trace
+trace,Trace- 5 mg/dL
+trace,Trace-Intact
+trace,Trace-Lysed
+trace,TRACE (0.25 g/dL)
+trace,traCE
+trace,Hemolyzed Trace

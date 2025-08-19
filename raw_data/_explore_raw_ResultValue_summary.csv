@@ -1,0 +1,12 @@
+category,count,examples_joined
+unit_suffix,4194,2L | 1L | 3L | 2LNC | 4L | 6L | 3LNC | 1LNC | 2L/min | 5L
+placeholder,68319,... | 
+inequality,1078018,>89 | <0.2 | <0.04 | <1.0 | <0.10 | <0.3 | <10 | <=5.0 | <20 | >1000
+percentage,15683,30% | 40% | 50% | 60% | 25% | 35% | 100% | 70% | 45% | 80%
+not_detected,443301,Not Detected | Nonreactive | NOT DETECTED | NONREACTIVE | Not detected | 2019-nCoV Not Detected | COVID NOT DETECTED | Non reactive | ND 6L | ND
+error_flag,24,Invalid | cancel | CANCELED | INVALID
+positive,42982,"Positive | POSITIVE | Lactose Positive Gram Negative Rod | Few Lactose Positive Gram Negative Rod | 20,000 CFU/mL Lactose Positive Gram Negative Rod | 10,000 CFU/mL Lactose Positive Gram Negative Rod | 30,000 CFU/mL Lactose Positive Gram Negative Rod | Low positive <=5% | Rare Lactose Positive Gram Negative Rod | 40,000 CFU/mL Lactose Positive Gram Negative Rod"
+trace,76536,Trace | TRACE | trace | Trace- 5 mg/dL | Trace-Intact | Trace-Lysed | TRACE (0.25 g/dL) | traCE | Hemolyzed Trace
+detected,30216,Detected | Reactive | NONE DETECTED | DETECTED | None Detected | REACTIVE | NO DNA DETECTED | Reactive cellular changes. | NONE DETECTED mcg/mL
+other,1397606,See Comment | 1+ | Reference Intervals | 2+ | 3+ | Present | No Growth at 1:1000 dilution | No Significant Growth | 4+ | Test Not Performed
+negative,1208889,Negative | NEGATIVE | Negative for Intraepithelial Lesion or Malignancy. | neg | Negative for Intraepithelial Lesion or Malignancy | Negative: No eosinophils seen. | Few Lactose Negative Gram Negative Rod | Moderate Lactose Negative Gram Negative Rod | Negative by antigen detection assay. | Lactose Negative Gram Negative Rod
