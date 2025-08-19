@@ -1,0 +1,51 @@
+raw_value_exact,bucket,count
+Negative,binary,1184557
+See Comment,free_text,969268
+>89,numeric_like,544120
+Not Detected,binary,305348
+<0.2,numeric_like,128426
+Nonreactive,binary,126655
+1+,ordinal,80527
+Trace,ordinal,75612
+...,unknown,68123
+Reference Intervals,free_text,57700
+2+,ordinal,48274
+3+,ordinal,43412
+Present,binary,42627
+Positive,binary,38215
+<0.04,numeric_like,27360
+<1.0,numeric_like,25184
+<0.10,numeric_like,23927
+<0.3,numeric_like,22194
+<10,numeric_like,20282
+No Growth at 1:1000 dilution,free_text,18875
+No Significant Growth,free_text,18060
+<=5.0,numeric_like,17512
+<20,numeric_like,16431
+Detected,binary,16350
+>1000,numeric_like,16064
+<20.0,numeric_like,15956
+<0.150,numeric_like,13262
+>100.0,numeric_like,12079
+Reactive,binary,11102
+<5,numeric_like,8799
+>200,numeric_like,8526
+NOT DETECTED,binary,8502
+">100,000 CFU/mL Escherichia coli",organism,8222
+NEGATIVE,binary,8171
+<1,numeric_like,7305
+4+,ordinal,7189
+<12.0,numeric_like,7096
+<1:20,numeric_like,6710
+Negative for Intraepithelial Lesion or Malignancy.,binary,6003
+<30,numeric_like,5619
+<4,numeric_like,5572
+<2.0,numeric_like,5481
+>210,numeric_like,5424
+<=200,numeric_like,5191
+<1:40,numeric_like,5092
+<24.0,numeric_like,4976
+Test Not Performed,free_text,4973
+<15,numeric_like,4880
+30%,numeric_like,4768
+<1:10,numeric_like,3887

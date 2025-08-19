@@ -1,0 +1,8 @@
+bucket,total_rows,unique_values,examples_joined
+binary,1766703,109,Negative | Negative | Negative | Negative | Negative | Not Detected | Negative | Negative | Not Detected | Not Detected
+free_text,1114080,15209,See Comment | Reference Intervals | No Growth at 1:1000 dilution | No Significant Growth | NO GROWTH AT 1:1000 DILUTION | Contamination suspected; Submit new specimen | Normal respiratory tract flora isolated | NO SIGNIFICANT GROWTH | NO METHICILLIN-RESISTANT STAPH AUREUS ISOLATED | See Stain
+numeric_like,1079864,1459,>89 | <0.2 | >89 | >89 | >89 | <0.2 | >89 | <0.04 | <1.0 | <0.3
+ordinal,258978,127,1+ | Trace | 3+ | 1+ | Trace | 2+ | Trace | 1+ | 2+ | 3+
+unknown,83397,1963,... | : ... | ... | INDETERMINATE-IMPAIRED | 2L NC | VC 30% | 1L NC | 3L NC | 4L NC | VC 40%
+organism,57653,1421,">100,000 CFU/mL Escherichia coli | Normal respiratory tract flora isolated. No clinically significant Staphylococcus aureus/MRSA, or Pseudomonas aeruginosa isolated. | >100,000 CFU/mL Klebsiella pneumoniae | Candida albicans | Staphylococcus epidermidis | Moderate Pseudomonas aeruginosa | 100,000 CFU/mL Escherichia coli | Candida albicans | Escherichia coli | >100,000 CFU/mL Proteus mirabilis"
+units_as_values,5264,167,PERFORMED | M1M1 | NS | RA | Yeast | Mold | Normal | Equivocal | Equivocal | Indeterminate

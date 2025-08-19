@@ -1,0 +1,71 @@
+bucket,example
+units_as_values,PERFORMED
+units_as_values,M1M1
+units_as_values,NS
+units_as_values,RA
+units_as_values,Yeast
+units_as_values,Mold
+units_as_values,Normal
+units_as_values,Equivocal
+units_as_values,Equivocal
+units_as_values,Indeterminate
+ordinal,1+
+ordinal,Trace
+ordinal,3+
+ordinal,1+
+ordinal,Trace
+ordinal,2+
+ordinal,Trace
+ordinal,1+
+ordinal,2+
+ordinal,3+
+organism,">100,000 CFU/mL Escherichia coli"
+organism,"Normal respiratory tract flora isolated. No clinically significant Staphylococcus aureus/MRSA, or Pseudomonas aeruginosa isolated."
+organism,">100,000 CFU/mL Klebsiella pneumoniae"
+organism,Candida albicans
+organism,Staphylococcus epidermidis
+organism,Moderate Pseudomonas aeruginosa
+organism,"100,000 CFU/mL Escherichia coli"
+organism,Candida albicans
+organism,Escherichia coli
+organism,">100,000 CFU/mL Proteus mirabilis"
+numeric_like,>89
+numeric_like,<0.2
+numeric_like,>89
+numeric_like,>89
+numeric_like,>89
+numeric_like,<0.2
+numeric_like,>89
+numeric_like,<0.04
+numeric_like,<1.0
+numeric_like,<0.3
+unknown,...
+unknown,: ...
+unknown,...
+unknown,INDETERMINATE-IMPAIRED
+unknown,2L NC
+unknown,VC 30%
+unknown,1L NC
+unknown,3L NC
+unknown,4L NC
+unknown,VC 40%
+binary,Negative
+binary,Negative
+binary,Negative
+binary,Negative
+binary,Negative
+binary,Not Detected
+binary,Negative
+binary,Negative
+binary,Not Detected
+binary,Not Detected
+free_text,See Comment
+free_text,Reference Intervals
+free_text,No Growth at 1:1000 dilution
+free_text,No Significant Growth
+free_text,NO GROWTH AT 1:1000 DILUTION
+free_text,Contamination suspected; Submit new specimen
+free_text,Normal respiratory tract flora isolated
+free_text,NO SIGNIFICANT GROWTH
+free_text,NO METHICILLIN-RESISTANT STAPH AUREUS ISOLATED
+free_text,See Stain
