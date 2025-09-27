@@ -538,6 +538,54 @@ def meds_to_remed(
     # Fetch the per-process tokenizer loaded by _worker_init()
     tokenizer = get_tokenizer()
     
+    # -- ADD D1
+        # --- Per-worker sharding & streaming setup (Option A) ---
+    import h5py
+    from pathlib import Path
+
+    # Each split writes under: <output_dir>/<output_name>/
+    split_dir = Path(output_dir)
+    split_dir.mkdir(parents=True, exist_ok=True)
+
+    # Per-worker manifest fragments (merged in main at the end)
+    manifests_dir = split_dir / "manifests"
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    worker_manifest_path = manifests_dir / f"manifest-worker-{worker_id:03d}.tsv"
+
+    # Per-worker shard bookkeeping
+    shard_seq = 0
+    events_in_current_shard = 0
+    events_since_flush = 0
+    current_h5 = None
+
+    def _open_new_shard():
+        nonlocal shard_seq, current_h5, events_in_current_shard, events_since_flush
+        if current_h5 is not None:
+            current_h5.flush()
+            current_h5.close()
+        shard_path = split_dir / f"worker-{worker_id:03d}-shard-{shard_seq:04d}.h5"
+        current_h5 = h5py.File(shard_path, "w")
+        events_in_current_shard = 0
+        events_since_flush = 0
+        shard_seq += 1
+        return shard_path
+
+    def _close_shard():
+        nonlocal current_h5
+        if current_h5 is not None:
+            current_h5.flush()
+            current_h5.close()
+            current_h5 = None
+
+    def _maybe_rollover():
+        if events_in_current_shard >= EVENTS_PER_SHARD:
+            _open_new_shard()
+
+    # Start first shard now
+    current_shard_path = _open_new_shard()
+
+
+    # -- END D1
     code_matching_pattern = re.compile(r"\d+")
 
     def meds_to_remed_unit(row):
@@ -713,52 +761,6 @@ def meds_to_remed(
             range(len(data_length)),
         ),
     )
-    # I THINK THIS IS THE SPOT for D1?
-    import h5py
-    from pathlib import Path
-
-    # Per-split output directory (you already set output_dir/output_name earlier)
-    split_dir = Path(output_dir)
-    split_dir.mkdir(parents=True, exist_ok=True)
-
-    # Worker-scoped manifest fragments; we’ll merge later in main()
-    manifests_dir = split_dir / "manifests"
-    manifests_dir.mkdir(parents=True, exist_ok=True)
-    worker_manifest_path = manifests_dir / f"manifest-worker-{worker_id:03d}.tsv"
-
-    # Per-worker shard bookkeeping
-    shard_seq = 0
-    events_in_current_shard = 0
-    events_since_flush = 0
-    current_h5 = None
-
-    def _open_new_shard():
-        nonlocal shard_seq, current_h5, events_in_current_shard, events_since_flush
-        if current_h5 is not None:
-            current_h5.flush()
-            current_h5.close()
-        shard_path = split_dir / f"worker-{worker_id:03d}-shard-{shard_seq:04d}.h5"
-        current_h5 = h5py.File(shard_path, "w")
-        events_in_current_shard = 0
-        events_since_flush = 0
-        shard_seq += 1
-        return shard_path
-
-    def _close_shard():
-        nonlocal current_h5
-        if current_h5 is not None:
-            current_h5.flush()
-            current_h5.close()
-            current_h5 = None
-
-    def _maybe_rollover():
-        if events_in_current_shard >= EVENTS_PER_SHARD:
-            _open_new_shard()
-
-    # Start first shard
-    current_shard_path = _open_new_shard()
-
-    # END THINK
     events_data = np.concatenate(events_data)
     # I THINK THIS IS THE SPOT for D2? <-- need confirmation
 
