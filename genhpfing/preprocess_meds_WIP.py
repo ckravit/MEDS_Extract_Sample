@@ -497,9 +497,21 @@ def main():
                     "workers."
                 )
 
-            for length_per_subject in length_per_subject_gathered:
-                for subject_id, (length, shard_id) in length_per_subject.items():
-                    manifest_f.write(f"{subject_id}\t{length}\t{shard_id}\n")
+            # for length_per_subject in length_per_subject_gathered:
+            #     for subject_id, (length, shard_id) in length_per_subject.items():
+            #         manifest_f.write(f"{subject_id}\t{length}\t{shard_id}\n")
+                # Merge per-worker manifests into the split-level TSV (header is already written)
+            split_dir = output_dir / output_name
+            manifests_dir = split_dir / "manifests"
+            final_manifest = output_dir / f"{output_name}.tsv"
+
+            if manifests_dir.exists():
+                with open(final_manifest, "a") as out_f:
+                    for frag in sorted(manifests_dir.glob("manifest-worker-*.tsv")):
+                        with open(frag, "r") as in_f:
+                            shutil.copyfileobj(in_f, out_f)
+                # Optional cleanup:
+                # shutil.rmtree(manifests_dir, ignore_errors=True)
 
 
 # def meds_to_remed(
@@ -537,7 +549,7 @@ def meds_to_remed(
     worker_id, df_chunk = worker_and_chunk
     # Fetch the per-process tokenizer loaded by _worker_init()
     tokenizer = get_tokenizer()
-    
+
     # -- ADD D1
         # --- Per-worker sharding & streaming setup (Option A) ---
     import h5py
@@ -761,9 +773,8 @@ def meds_to_remed(
             range(len(data_length)),
         ),
     )
-    events_data = np.concatenate(events_data)
-    # I THINK THIS IS THE SPOT for D2? <-- need confirmation
-
+    # Do not want monolith
+    # events_data = np.concatenate(events_data)
 
     df_chunk = df_chunk.select(["subject_id", "cohort_end", "cohort_label", "time"])
     df_chunk = df_chunk.insert_column(4, data_index)
@@ -798,35 +809,112 @@ def meds_to_remed(
         desc=f"Writing data from worker-{worker_id}:",
     )
 
+    # for sample in progress_bar:
+    #     with h5py.File(str(output_dir / output_name / f"{worker_id}.h5"), "a") as f:
+    #         if "ehr" in f:
+    #             result = f["ehr"]
+    #         else:
+    #             result = f.create_group("ehr")
+
+    #         sample_result = result.create_group(sample[0])
+
+    #         times = np.concatenate(sample[2])
+    #         data_indices = np.concatenate(sample[3])
+    #         if debug:
+    #             data_indices = data_indices[-100:]
+    #             times = times[-100:]
+
+    #         data = events_data[data_indices]
+    #         sample_result.create_dataset("hi", data=data, dtype="i2", compression="lzf", shuffle=True)
+
+    #         times = [datetime.strptime(x, "%Y-%m-%d %H:%M:%S") for x in times]
+    #         times = np.cumsum(np.diff(times))
+    #         times = list(map(lambda x: round(x.total_seconds() / 60), times))
+    #         times = np.array([0] + times)
+
+    #         sample_result.create_dataset("time", data=times, dtype="i")
+    #         sample_result.create_dataset("label", data=int(sample[1]))
+
+    #         length_per_subject[sample[0]] = (len(times), worker_id)
     for sample in progress_bar:
-        with h5py.File(str(output_dir / output_name / f"{worker_id}.h5"), "a") as f:
-            if "ehr" in f:
-                result = f["ehr"]
-            else:
-                result = f.create_group("ehr")
+        # sample fields (unchanged from your code):
+        #   sample[0] -> subject_id (string after your suffixing)
+        #   sample[1] -> label (scalar)
+        #   sample[2] -> list of time lists (you concatenate them below)
+        #   sample[3] -> list of data_index lists (global event indices for this subject)
 
-            sample_result = result.create_group(sample[0])
+        subject_id = sample[0]
+        label_val  = int(sample[1])
 
-            times = np.concatenate(sample[2])
-            data_indices = np.concatenate(sample[3])
-            if debug:
-                data_indices = data_indices[-100:]
-                times = times[-100:]
+        # Build times (unchanged)
+        times = np.concatenate(sample[2])
+        if debug:
+            times = times[-100:]
+        times_dt = [datetime.strptime(x, "%Y-%m-%d %H:%M:%S") for x in times]
+        times_delta = np.cumsum(np.diff(times_dt))
+        times_minutes = list(map(lambda x: round(x.total_seconds() / 60), times_delta))
+        times_arr = np.array([0] + times_minutes, dtype=np.int32)
 
-            data = events_data[data_indices]
-            sample_result.create_dataset("hi", data=data, dtype="i2", compression="lzf", shuffle=True)
+        # Build this subject's hi by GATHERING from events_data (list of arrays)
+        # without concatenating all events globally.
+        #
+        # We will map each global index back to (row_idx, offset_in_row) using
+        # your existing data_index_offset and data_length arrays.
+        data_indices = np.concatenate(sample[3])
+        if debug:
+            data_indices = data_indices[-100:]
 
-            times = [datetime.strptime(x, "%Y-%m-%d %H:%M:%S") for x in times]
-            times = np.cumsum(np.diff(times))
-            times = list(map(lambda x: round(x.total_seconds() / 60), times))
-            times = np.array([0] + times)
+        # Prepare a container and fill row-by-row to avoid a huge global array.
+        E = int(data_indices.shape[0])
+        hi_subj = np.empty((E, 3, max_event_length), dtype=np.uint16)
 
-            sample_result.create_dataset("time", data=times, dtype="i")
-            sample_result.create_dataset("label", data=int(sample[1]))
+        # Helper: for a given global index g, find row j s.t. data_index_offset[j] <= g < data_index_offset[j]+data_length[j]
+        from bisect import bisect_right
+        for write_pos, g in enumerate(data_indices):
+            j = bisect_right(data_index_offset, g) - 1  # row index in events_data
+            local = int(g - data_index_offset[j])       # offset within that row's array
+            hi_subj[write_pos] = events_data[j][local]
 
-            length_per_subject[sample[0]] = (len(times), worker_id)
+        # If adding this subject would overflow the shard budget, roll to a new shard first
+        if events_in_current_shard + E > EVENTS_PER_SHARD:
+            _close_shard()
+            current_shard_path = _open_new_shard()
+
+        # Ensure the root group exists in this shard
+        if "ehr" in current_h5:
+            result = current_h5["ehr"]
+        else:
+            result = current_h5.create_group("ehr")
+
+        # Preserve your naming convention (you already suffixed subject_id earlier)
+        sample_result = result.create_group(subject_id)
+        sample_result.create_dataset("hi",   data=hi_subj,   dtype="i2", compression="lzf", shuffle=True)
+        sample_result.create_dataset("time", data=times_arr, dtype="i")
+        sample_result.create_dataset("label", data=label_val)
+
+        # Update counters and manifest
+        events_in_current_shard += E
+        events_since_flush      += E
+        length_per_subject[subject_id] = (int(times_arr.shape[0]), worker_id)
+
+        # Append one manifest row for this subject (subject_id, events, shard filename)
+        from pathlib import Path as _P
+        with open(worker_manifest_path, "a") as _mf:
+            _mf.write(f"{subject_id}\t{E}\t{_P(current_shard_path).name}\n")
+
+        # Flush cadence to cap peak RAM
+        if events_since_flush >= FLUSH_EVERY:
+            current_h5.flush()
+            events_since_flush = 0
+
+        # Rollover if shard is full
+        if events_in_current_shard >= EVENTS_PER_SHARD:
+            _close_shard()
+            current_shard_path = _open_new_shard()
+    # Close last shard from this worker
+    _close_shard()
+
     del df_chunk
-    # END THINK
 
     return length_per_subject
 
