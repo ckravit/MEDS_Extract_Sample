@@ -1,687 +1,486 @@
-import functools
+#!/usr/bin/env python3
+"""
+Standalone GenHPF MEDS Preprocessing Script with Enhanced Monitoring
+Handles resource management, progress tracking, and robust error handling
+"""
+
+import subprocess
 import logging
-import glob
-import multiprocessing
+import psutil
+import time
 import os
-import re
-import shutil
-from argparse import ArgumentParser
-from bisect import bisect_left, bisect_right
-from datetime import datetime
-from pathlib import Path
-
+import sys
+import signal
+import glob
 import h5py
-import numpy as np
-import pandas as pd
-import polars as pl
-from tqdm import tqdm
-from transformers import AutoTokenizer
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional, Dict, List, Tuple
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+class GenHPFPreprocessor:
+    def __init__(self,
+                 meds_data_dir: str,
+                 meds_labels_dir: str,
+                 meds_metadata_dir: str,
+                 meds_output_dir: str,
+                 max_event_length: int = 256,
+                 log_dir: str = "logs"):
 
-# Note: Do NOT create multiprocessing objects at import time when using spawn.
-# Manager/list must be created inside main().
-# pool_manager = multiprocessing.Manager()
-# warned_codes = pool_manager.list()
+        self.meds_data_dir = meds_data_dir
+        self.meds_labels_dir = meds_labels_dir
+        self.meds_metadata_dir = meds_metadata_dir
+        self.meds_output_dir = meds_output_dir
+        self.max_event_length = max_event_length
+        self.log_dir = Path(log_dir)
 
+        # Create log directory
+        self.log_dir.mkdir(exist_ok=True)
 
-def find_boundary_between(tuples_list, start, end):
-    starts = [s for s, e in tuples_list]
-    ends = [e for s, e in tuples_list]
+        # Setup logging with rotation
+        self.setup_logging()
 
-    start_index = bisect_left(starts, start)
-    end_index = bisect_right(ends, end)
-    assert start_index < end_index
+        # Resource monitoring
+        self.start_time = None
+        self.last_progress_time = None
+        self._last_process_log_size = 0
+        self._seen_h5_count = 0
+        self._process_log_path: Optional[Path] = None
 
-    return start_index, end_index
+    def setup_logging(self):
+        """Setup comprehensive logging with file rotation"""
+        log_file = self.log_dir / f"genhpf_preprocessing_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s | %(levelname)s | %(message)s',
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
 
-def get_parser():
-    parser = ArgumentParser()
-    parser.add_argument(
-        "root",
-        help="path to MEDS dataset. it can be either of directory or the exact file path "
-        "with the file extension. if provided with directory, it tries to scan *.csv or "
-        "*.parquet files contained in the directory, including sub-directories, to process "
-        "all of them.",
-    )
-    parser.add_argument(
-        "--metadata_dir",
-        help="path to metadata directory for the input MEDS dataset, which contains codes.parquet",
-    )
+        self.logger = logging.getLogger(__name__)
+        self.logger.info(f"Logging initialized. Log file: {log_file}")
 
-    parser.add_argument(
-        "--birth_code", type=str, default="MEDS_BIRTH", help="string code for the birth event in the dataset."
-    )
+    def get_optimal_workers(self, max_workers: int = None) -> int:
+        """Calculate optimal number of workers based on system resources"""
+        # Get system info
+        cpu_count = psutil.cpu_count(logical=True)
+        available_gb = psutil.virtual_memory().available / (1024**3)
 
-    parser.add_argument(
-        "--cohort",
-        type=str,
-        help="path to the defined cohort, which must be a result of ACES. it can be either of "
-        "directory or the exact file path that has the same extension with the MEDS dataset "
-        "to be processed. the file structure of this cohort directory should be the same with "
-        "the provided MEDS dataset directory to match each cohort to its corresponding shard "
-        "data.",
-    )
-    parser.add_argument(
-        "--cohort_label_name",
-        type=str,
-        default="boolean_value",
-        help="column name in the cohort dataframe to be used for label",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="outputs",
-        help="directory to save processed outputs.",
-    )
-    parser.add_argument(
-        "--skip-if-exists",
-        action="store_true",
-        help="whether or not to skip the processing if the output directory already "
-        "exists.",
-    )
-    parser.add_argument(
-        "--rebase",
-        action="store_true",
-        help="whether or not to rebase the output directory if exists.",
-    )
-    parser.add_argument(
-        "--debug",
-        type=bool,
-        default=False,
-        help="whether or not to enable the debug mode, which forces the script to be run with "
-        "only one worker."
-    )
-    parser.add_argument(
-        "--workers",
-        metavar="N",
-        default=1,
-        type=int,
-        help="number of parallel workers.",
-    )
-    parser.add_argument(
-        "--max_event_length",
-        metavar="N",
-        default=128,
-        type=int,
-        help="maximum number of tokens in an event.",
-    )
+        # Conservative estimate: 6GB per worker for MEDS processing
+        memory_based_workers = max(1, int(available_gb / 6))
+        cpu_based_workers = max(1, max(1, cpu_count - 12))  # Leave 12 cores for system
 
-    parser.add_argument(
-        "--mimic_dir",
-        default=None,
-        help="path to directory for MIMIC-IV database containing hosp/ and icu/ as a subdirectory. "
-        "this is used for addressing missing descriptions in the metadata for MIMIC-IV codes.",
-    )
+        optimal_workers = min(memory_based_workers, cpu_based_workers)
 
-    return parser
+        if max_workers:
+            optimal_workers = min(optimal_workers, max_workers)
+
+        self.logger.info(f"System resources: {cpu_count} CPUs, {available_gb:.1f}GB available memory")
+        self.logger.info(f"Calculated optimal workers: {optimal_workers}")
+
+        return optimal_workers
+
+    def monitor_resources(self):
+        """Log current system resource usage (uses the output dir mount for disk stats)"""
+        cpu_percent = psutil.cpu_percent(interval=1)
+        memory = psutil.virtual_memory()
+
+        # Measure free space where output will be written
+        try:
+            disk = psutil.disk_usage(self.meds_output_dir)
+        except Exception:
+            disk = psutil.disk_usage('/')
+
+        self.logger.info(
+            "Resources - CPU: %.1f%%, Memory: %.1f%% (%.1fGB free), Disk: %.1f%% (%.1fGB free)",
+            cpu_percent,
+            memory.percent,
+            memory.available/1024**3,
+            disk.percent,
+            disk.free/1024**3
+        )
+
+    def check_prerequisites(self) -> bool:
+        """Verify all required paths and dependencies exist"""
+        self.logger.info("Checking prerequisites...")
+
+        # Check paths
+        paths_to_check = [
+            (self.meds_data_dir, "MEDS data directory"),
+            (self.meds_labels_dir, "MEDS labels directory"),
+            (self.meds_metadata_dir, "MEDS metadata directory")
+        ]
+
+        for path, description in paths_to_check:
+            if not Path(path).exists():
+                self.logger.error(f"{description} does not exist: {path}")
+                return False
+            self.logger.info(f"✓ {description}: {path}")
+
+        # Check for codes.parquet
+        codes_file = Path(self.meds_metadata_dir) / "codes.parquet"
+        if not codes_file.exists():
+            self.logger.error(f"codes.parquet not found in metadata directory: {codes_file}")
+            return False
+        self.logger.info(f"✓ codes.parquet found: {codes_file}")
+
+        # Check GenHPF installation
+        try:
+            result = subprocess.run(['genhpf-preprocess-meds', '--help'],
+                                  capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                self.logger.error("genhpf-preprocess-meds not accessible")
+                return False
+            self.logger.info("✓ GenHPF installation verified")
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            self.logger.error("genhpf-preprocess-meds command not found or not responding")
+            return False
+
+        return True
+
+    def estimate_processing_time(self, num_workers: int) -> str:
+        """Estimate processing time based on data size and workers"""
+        try:
+            # Count data files
+            data_files: List[str] = []
+            data_path = Path(self.meds_data_dir)
+            if data_path.is_dir():
+                data_files.extend(glob.glob(str(data_path / "**/*.csv"), recursive=True))
+                data_files.extend(glob.glob(str(data_path / "**/*.parquet"), recursive=True))
+            else:
+                data_files = [str(data_path)]
+
+            total_size_gb = sum(Path(f).stat().st_size for f in data_files) / (1024**3)
+
+            # Heuristic: ~1 GB per hour per worker
+            hours_per_gb = 1.0
+            estimated_hours = max(0.5, (total_size_gb * hours_per_gb) / max(1, num_workers))
+
+            self.logger.info(f"Data size: {total_size_gb:.1f}GB across {len(data_files)} files")
+            self.logger.info(f"Estimated processing time: {estimated_hours:.1f} hours with {num_workers} workers")
+
+            return f"{estimated_hours:.1f} hours"
+        except Exception as e:
+            self.logger.warning(f"Could not estimate processing time: {e}")
+            return "unknown"
+
+    def _count_output_h5(self) -> int:
+        """Count .h5 files under expected split dirs"""
+        output_path = Path(self.meds_output_dir)
+        expected_dirs = ['held_out', 'train', 'tuning']
+        count = 0
+        for d in expected_dirs:
+            p = output_path / d
+            if p.exists():
+                count += len(list(p.glob("*.h5")))
+        return count
+
+    def _update_progress_marker_if_output_advances(self):
+        """Update last_progress_time if we see process log growth or new .h5 files"""
+        # Log growth
+        try:
+            sz = self._process_log_path.stat().st_size if self._process_log_path else 0
+        except Exception:
+            sz = 0
+
+        grew = sz > self._last_process_log_size
+        if grew:
+            self._last_process_log_size = sz
+            self.last_progress_time = datetime.now()
+
+        # New h5 files
+        try:
+            h5_count = self._count_output_h5()
+            if h5_count > self._seen_h5_count:
+                self._seen_h5_count = h5_count
+                self.last_progress_time = datetime.now()
+        except Exception:
+            pass
+
+    def _popen_with_own_group(self, command, stdout_handle):
+        """Start subprocess in its own process group for group termination"""
+        if os.name == "nt":
+            # Windows: CREATE_NEW_PROCESS_GROUP
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            return subprocess.Popen(
+                command,
+                stdout=stdout_handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                creationflags=CREATE_NEW_PROCESS_GROUP
+            )
+        else:
+            # POSIX: new session (setsid)
+            return subprocess.Popen(
+                command,
+                stdout=stdout_handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                preexec_fn=os.setsid
+            )
+
+    def _terminate_process_group(self, process: subprocess.Popen):
+        """Terminate the entire child process group"""
+        try:
+            if os.name == "nt":
+                # send CTRL-BREAK to the process group; fall back to terminate
+                try:
+                    process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
+                except Exception:
+                    process.terminate()
+            else:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        except Exception:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+
+    def run_preprocessing(self, num_workers: int = None, rebase: bool = True) -> Tuple[bool, Optional[Path]]:
+        """Run the GenHPF MEDS preprocessing with monitoring"""
+        if not self.check_prerequisites():
+            return False, None
+
+        # Calculate optimal workers
+        if num_workers is None:
+            num_workers = self.get_optimal_workers()
+        else:
+            num_workers = min(num_workers, self.get_optimal_workers())
+
+        # Estimate processing time
+        estimated_time = self.estimate_processing_time(num_workers)
+
+        # Construct command
+        command = [
+            "genhpf-preprocess-meds",
+            self.meds_data_dir,
+            "--cohort", self.meds_labels_dir,
+            "--metadata_dir", self.meds_metadata_dir,
+            "--output_dir", self.meds_output_dir,
+            "--workers", str(num_workers),
+            "--max_event_length", str(self.max_event_length)
+        ]
+
+        if rebase:
+            command.append("--rebase")
+
+        self.logger.info("="*80)
+        self.logger.info("STARTING GENHPF MEDS PREPROCESSING")
+        self.logger.info("="*80)
+        self.logger.info(f"Command: {' '.join(command)}")
+        self.logger.info(f"Workers: {num_workers}")
+        self.logger.info(f"Max event length: {self.max_event_length}")
+        self.logger.info(f"Estimated time: {estimated_time}")
+        self.logger.info("="*80)
+
+        # Create output directory
+        Path(self.meds_output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Setup log file for subprocess
+        process_log = self.log_dir / f"genhpf_process_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        self._process_log_path = process_log
+        self._last_process_log_size = 0
+        self._seen_h5_count = self._count_output_h5()
+
+        self.start_time = datetime.now()
+        self.last_progress_time = self.start_time
+
+        try:
+            with open(process_log, 'w') as log_file:
+                # Start process (own process group)
+                process = self._popen_with_own_group(command, log_file)
+
+                self.logger.info(f"Process started with PID: {process.pid}")
+                self.logger.info(f"Process output logged to: {process_log}")
+
+                # Monitor progress
+                check_interval = 600  # 10 minutes
+                stall_threshold = timedelta(hours=2)
+
+                while process.poll() is None:
+                    time.sleep(check_interval)
+                    current_time = datetime.now()
+                    elapsed = current_time - self.start_time
+
+                    self.logger.info(f"Progress update - Elapsed: {elapsed}")
+                    self.monitor_resources()
+
+                    # Progress markers (log growth or new outputs)
+                    self._update_progress_marker_if_output_advances()
+
+                    # Check if process is still responsive
+                    if current_time - self.last_progress_time > stall_threshold:
+                        self.logger.warning(
+                            "No observable progress (log/output changes) for %s - process may be stuck",
+                            stall_threshold
+                        )
+                        # Do not kill automatically; just warn. User can Ctrl-C.
+
+                # Process completed
+                return_code = process.returncode
+                total_time = datetime.now() - self.start_time
+
+                if return_code == -2:
+                    self.logger.error("Process received SIGINT (Ctrl-C or kill -2). Stopping.")
+                    self.logger.error(f"Check process log for details: {process_log}")
+                    return False, process_log
+
+                if return_code == -15:
+                    self.logger.error("Process received SIGTERM (kill/termination). Stopping.")
+                    self.logger.error(f"Check process log for details: {process_log}")
+                    return False, process_log
+
+                if return_code == -9:
+                    self.logger.error("Process received SIGKILL (likely OOM). "
+                                    "Try fewer --workers and/or a smaller max_event_length.")
+                    self.logger.error(f"Check process log for details: {process_log}")
+                    return False, process_log
+
+                if return_code == 0:
+                    self.logger.info("="*80)
+                    self.logger.info("PREPROCESSING COMPLETED SUCCESSFULLY!")
+                    self.logger.info(f"Total time: {total_time}")
+                    self.logger.info("="*80)
+
+                    # Verify outputs
+                    if self.verify_outputs():
+                        self.logger.info("Output verification passed")
+                        return True, process_log
+                    else:
+                        self.logger.error("Output verification failed")
+                        return False, process_log
+                else:
+                    self.logger.error(f"Preprocessing failed with return code: {return_code}")
+                    self.logger.error(f"Check process log for details: {process_log}")
+                    return False, process_log
+
+        except KeyboardInterrupt:
+            self.logger.warning("Received interrupt signal - terminating process group")
+            if 'process' in locals():
+                self._terminate_process_group(process)
+                try:
+                    process.wait(timeout=30)
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+            return False, self._process_log_path
+        except Exception as e:
+            self.logger.error(f"Unexpected error during preprocessing: {e}")
+            return False, self._process_log_path
+
+    def verify_outputs(self) -> bool:
+        """Verify that preprocessing outputs are valid"""
+        self.logger.info("Verifying preprocessing outputs...")
+
+        output_path = Path(self.meds_output_dir)
+
+        # Check for expected directory structure
+        expected_dirs = ['held_out', 'train', 'tuning']  # Based on your setup
+        h5_files: List[Path] = []
+        tsv_files: List[Path] = []
+
+        for dir_name in expected_dirs:
+            dir_path = output_path / dir_name
+            if dir_path.exists():
+                # Check for .h5 files
+                h5_pattern = list(dir_path.glob("*.h5"))
+                h5_files.extend(h5_pattern)
+                self.logger.info(f"Found {len(h5_pattern)} .h5 files in {dir_name}/")
+
+            # Check for .tsv files
+            tsv_file = output_path / f"{dir_name}.tsv"
+            if tsv_file.exists():
+                tsv_files.append(tsv_file)
+                self.logger.info(f"Found manifest file: {tsv_file}")
+
+        # Verify .h5 file structure
+        for h5_file in h5_files[:3]:  # Check first few files
+            try:
+                with h5py.File(h5_file, 'r') as f:
+                    if 'ehr' not in f:
+                        self.logger.warning(f"{h5_file.name}: Missing 'ehr' group")
+                    else:
+                        ehr_group = f['ehr']
+                        self.logger.info(f"{h5_file.name}: Contains {len(ehr_group.keys())} patient cohorts")
+            except Exception as e:
+                self.logger.error(f"Error reading {h5_file.name}: {e}")
+
+        success = len(h5_files) > 0 and len(tsv_files) > 0
+
+        if success:
+            self.logger.info(f"Verification complete: {len(h5_files)} .h5 files, {len(tsv_files)} .tsv files")
+        else:
+            self.logger.error("Verification failed: Missing expected output files")
+
+        return success
 
 
 def main():
-    # --- Ensure we use 'spawn' BEFORE creating any pools/managers ---
-    try:
-        if multiprocessing.get_start_method(allow_none=True) != "spawn":
-            multiprocessing.set_start_method("spawn", force=True)
-    except RuntimeError:
-        # start method may already be set elsewhere; ignore
-        pass
+    """Main execution function"""
 
-    parser = get_parser()
-    args = parser.parse_args()
+    # Configuration - UPDATE THESE PATHS FOR YOUR SETUP
+    # MEDS_DATA_DIR = "/opt/data/workingdir/ckravit/MEDS/MEDS220/DATA/meds_output/data/"
+    # MEDS_LABELS_DIR = "/opt/data/workingdir/ckravit/MEDS/MEDS220/ACES/testhort/results/"
+    # MEDS_METADATA_DIR = "/opt/data/workingdir/ckravit/MEDS/MEDS220/DATA/meds_output/metadata/"
+    # MEDS_OUTPUT_DIR = "/opt/data/workingdir/ckravit/MEDS/MEDS220/genHPF/output/"
+    src_dir = '/opt/data/workingdir/ckravit/MEDS/MEDS220/genHPF/'
+    MEDS_DATA_DIR = '/opt/data/workingdir/ckravit/MEDS/MEDS220/DATA/MEDS_output/data/'
+    MEDS_INDIV_PARQUET = '/opt/data/workingdir/ckravit/MEDS/MEDS220/DATA/MEDS_output/data/train/0.parquet'
+    MEDS_LABELS_DIR = '/opt/data/workingdir/ckravit/MEDS/MEDS220/ACES/testhort/results/'
+    MEDS_METADATA_DIR = '/opt/data/workingdir/ckravit/MEDS/MEDS220/DATA/MEDS_output/metadata/'
+    # MEDS_OUTPUT_DIR = f'{src_dir}output/'
+    MEDS_OUTPUT_DIR = '/opt/data/commonfilesharePHI/MEDS_shared/ckravit/genhpf/output'
 
-    root_path = Path(args.root)
-    output_dir = Path(args.output_dir)
-    metadata_dir = Path(args.metadata_dir)
-    mimic_dir = Path(args.mimic_dir) if args.mimic_dir is not None else None
+    # Processing parameters
+    MAX_EVENT_LENGTH = 256  # Increased from default 128 to handle longer events
+    MAX_WORKERS = 2  # Let system auto-calculate (set to None), or set specific number
 
-    num_workers = max(args.workers, 1)
-    if args.debug:
-        num_workers = 1
-        os.environ["RAYON_RS_NUM_CPUS"] = "1"
-    else:
-        cpu_count = multiprocessing.cpu_count()
-        if num_workers > cpu_count:
-            logger.warning(
-                f"Number of workers (--workers) is greater than the number of available CPUs "
-                f"({cpu_count}). Setting the number of workers to {cpu_count}."
-            )
-            num_workers = cpu_count
-
-    if root_path.is_dir():
-        data_paths = glob.glob(str(root_path / "**/*.csv"), recursive=True)
-        if len(data_paths) == 0:
-            data_paths = glob.glob(str(root_path / "**/*.parquet"), recursive=True)
-        if len(data_paths) == 0:
-            raise ValueError("Data directory does not contain any supported file formats: .csv or .parquet")
-    else:
-        data_paths = [root_path]
-
-    if not output_dir.exists():
-        output_dir.mkdir(parents=True)
-    else:
-        if args.rebase:
-            shutil.rmtree(output_dir)
-            output_dir.mkdir(parents=True)
-        elif output_dir.exists():
-            if args.skip_if_exists:
-                ls = glob.glob(str(output_dir / "**/*"), recursive=True)
-                expected_files = []
-                for subset in set(os.path.dirname(x) for x in data_paths):
-                    expected_files.extend([
-                        os.path.join(str(output_dir), os.path.basename(subset), f"{i}.h5")
-                        for i in range(num_workers)
-                    ])
-                if set(expected_files).issubset(set(ls)):
-                    logger.info(
-                        f"Output directory already contains the expected files. Skipping the "
-                        "processing as --skip-if-exists is set. If you want to rebase the directory, "
-                        "please run the script with --rebase."
-                    )
-                    return
-            else:
-                raise ValueError(
-                    f"File exists: '{str(output_dir.resolve())}'. If you want to rebase the "
-                    "directory automatically, please run the script with --rebase."
-                )
-
-    label_col_name = args.cohort_label_name
-
-    # tokenizer = AutoTokenizer.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
-    tokenizer = AutoTokenizer.from_pretrained("/opt/data/workingdir/user/MEDS/MEDS220/genHPF/emilyalsentzer/Bio_ClinicalBERT")
-
-    codes_metadata = pl.read_parquet(metadata_dir / "codes.parquet").to_pandas()
-    codes_metadata = codes_metadata.set_index("code")["description"].to_dict()
-    # do not allow to use static events or birth event
-    birth_code = args.birth_code
-    # if birth_code not in codes_metadata:
-    #     print(
-    #         f'"{birth_code}" is not found in the codes metadata, which may lead to '
-    #         "unexpected results since we currently exclude this event from the input data. "
-    #     )
-
-    if mimic_dir is not None:
-        d_items = pd.read_csv(mimic_dir / "icu" / "d_items.csv.gz")
-        d_items["itemid"] = d_items["itemid"].astype("str")
-        d_items = d_items.set_index("itemid")["label"].to_dict()
-        d_labitems = pd.read_csv(mimic_dir / "hosp" / "d_labitems.csv.gz")
-        d_labitems["itemid"] = d_labitems["itemid"].astype("str")
-        d_labitems = d_labitems.set_index("itemid")["label"].to_dict()
-    else:
-        d_items = None
-        d_labitems = None
-
-    max_event_length = args.max_event_length
-
-    progress_bar = tqdm(data_paths, total=len(data_paths))
-    for data_path in progress_bar:
-        progress_bar.set_description(str(data_path))
-
-        data_path = Path(data_path)
-        subdir = data_path.relative_to(root_path).parent
-        if data_path.suffix == ".csv":
-            data = pl.scan_csv(
-                data_path,
-                low_memory=True if args.debug else False,
-            )
-        elif data_path.suffix == ".parquet":
-            data = pl.scan_parquet(
-                data_path,
-                parallel="none" if args.debug else "auto",
-                low_memory=True if args.debug else False,
-            )
-        else:
-            raise ValueError(f"Unsupported file format: {data_path.suffix}")
-
-        data = data.with_columns(
-            pl.when(pl.col("code") == birth_code).then(None).otherwise(pl.col("time")).alias("time")
-        )
-        data = data.drop_nulls(subset=["subject_id", "time"])
-
-        cohort_path = Path(args.cohort) / subdir / data_path.name
-
-        if cohort_path.suffix == ".csv":
-            cohort = pl.scan_csv(cohort_path)
-        elif cohort_path.suffix == ".parquet":
-            cohort = pl.scan_parquet(cohort_path)
-        else:
-            raise ValueError(f"Unsupported file format: {cohort_path.suffix}")
-
-        cohort = cohort.drop_nulls(label_col_name)
-        cohort = cohort.unique()
-
-        cohort = cohort.select(
-            [
-                pl.col("subject_id"),
-                pl.col(label_col_name),
-                # pl.col("input.end_summary").struct.field("timestamp_at_start").alias("starttime"),
-                pl.col("prediction_time").alias("endtime"),
-            ]
-        )
-        cohort = (
-            cohort.group_by("subject_id", maintain_order=True)
-            .agg(pl.col(["endtime", label_col_name]))
-            .collect()
-        )  # omitted "starttime"
-        cohort_dict = {
-            x["subject_id"]: {
-                # "starttime": x["starttime"],
-                "endtime": x["endtime"],
-                "label": x[label_col_name],
-            }
-            for x in cohort.iter_rows(named=True)
-        }
-
-        def extract_cohort(row):
-            subject_id = row["subject_id"]
-            time = row["time"]
-            if subject_id not in cohort_dict:
-                # return {"cohort_start": None, "cohort_end": None, "cohort_label": None}
-                return {"cohort_end": None, "cohort_label": None}
-
-            cohort_criteria = cohort_dict[subject_id]
-            # starts = cohort_criteria["starttime"]
-            ends = cohort_criteria["endtime"]
-            labels = cohort_criteria["label"]
-
-            # for start, end, label in zip(starts, ends, labels):
-            #     if start <= time and time <= end:
-            #         return {"cohort_start": start, "cohort_end": end, "cohort_label": label}
-
-            # assume it is possible that each event goes into multiple different cohorts
-            cohort_ends = []
-            cohort_labels = []
-            for end, label in zip(ends, labels):
-                if time <= end:
-                    # return {"cohort_start": start, "cohort_end": end, "cohort_label": label}
-                    cohort_ends.append(end)
-                    cohort_labels.append(label)
-
-            if len(cohort_ends) > 0:
-                return {"cohort_end": cohort_ends, "cohort_label": cohort_labels}
-            else:
-                # return {"cohort_start": None, "cohort_end": None, "cohort_label": None}
-                return {"cohort_end": None, "cohort_label": None}
-
-        data = data.group_by(["subject_id", "time"], maintain_order=True).agg(pl.all())
-        data = (
-            data.with_columns(
-                pl.struct(["subject_id", "time"])
-                .map_elements(
-                    extract_cohort,
-                    return_dtype=pl.Struct(
-                        {
-                            "cohort_end": pl.List(pl.Datetime()),
-                            "cohort_label": pl.List(pl.Boolean),
-                        }
-                    ),
-                )
-                .alias("cohort_criteria")
-            )
-            .unnest("cohort_criteria")
-            .collect()
-        )
-
-        data = data.drop_nulls("cohort_label")
-
-        data = data.with_columns(pl.col("time").dt.strftime("%Y-%m-%d %H:%M:%S").cast(pl.List(str)))
-        data = data.with_columns(
-            pl.col("time").list.sample(n=pl.col("code").list.len(), with_replacement=True)
-        )
-
-        if args.debug:
-            data = data[:5000]
-
-        if str(subdir) != ".":
-            output_name = str(subdir)
-        else:
-            output_name = data_path.stem
-
-        if not os.path.exists(output_dir / output_name):
-            os.makedirs(output_dir / output_name)
-
-        with open(str(output_dir / (output_name + ".tsv")), "a") as manifest_f:
-            if os.path.getsize(output_dir / (output_name + ".tsv")) == 0:
-                manifest_f.write(f"{output_dir}/{output_name}\n")
-
-            must_have_columns = [
-                "subject_id",
-                "cohort_end",
-                "cohort_label",
-                "time",
-                "code",
-                "numeric_value",
-            ]
-            rest_of_columns = [x for x in data.columns if x not in must_have_columns]
-            column_name_idcs = {col: i for i, col in enumerate(data.columns)}
-
-            # Create a Manager and a shared list for warnings ONLY now (after spawn is set)
-            warned_codes = None
-            if num_workers > 1:
-                ctx = multiprocessing.get_context("spawn")
-                manager = ctx.Manager()
-                warned_codes = manager.list()
-            else:
-                # single-process path can use a plain Python list
-                warned_codes = []
-
-
-            meds_to_remed_partial = functools.partial(
-                meds_to_remed,
-                tokenizer,
-                rest_of_columns,
-                column_name_idcs,
-                codes_metadata,
-                output_dir,
-                output_name,
-                num_workers,
-                d_items,
-                d_labitems,
-                warned_codes,
-                max_event_length,
-                args.debug,
-            )
-
-            # meds --> remed
-            logger.info(f"Start processing {data_path}")
-            if num_workers <= 1:
-                length_per_subject_gathered = [meds_to_remed_partial(data)]
-                del data
-            else:
-                subject_ids = data["subject_id"].unique().to_list()
-                n = num_workers
-                subject_id_chunks = [subject_ids[i::n] for i in range(n)]
-                data_chunks = []
-                for subject_id_chunk in subject_id_chunks:
-                    data_chunks.append(data.filter(pl.col("subject_id").is_in(subject_id_chunk)))
-                del data
-
-                num_valid_data_chunks = sum(map(lambda x: len(x) > 0, data_chunks))
-                if num_valid_data_chunks < num_workers:
-                    raise ValueError(
-                        "Number of valid data chunks (= number of unique subjects) were smaller "
-                        "than the specified num workers (--workers) due to the small size of data. "
-                        "Consider reducing the number of workers."
-                    )
-
-                # pool = multiprocessing.get_context("spawn").Pool(processes=num_workers)
-                ctx = multiprocessing.get_context("spawn")
-                pool = ctx.Pool(processes=num_workers)
-
-                # the order is preserved
-                length_per_subject_gathered = pool.map(meds_to_remed_partial, data_chunks)
-                pool.close()
-                pool.join()
-                del data_chunks
-
-            if len(length_per_subject_gathered) != num_workers:
-                raise ValueError(
-                    "Number of processed workers were smaller than the specified num workers "
-                    "(--workers) due to the small size of data. Consider reducing the number of "
-                    "workers."
-                )
-
-            for length_per_subject in length_per_subject_gathered:
-                for subject_id, (length, shard_id) in length_per_subject.items():
-                    manifest_f.write(f"{subject_id}\t{length}\t{shard_id}\n")
-
-
-def meds_to_remed(
-    tokenizer,
-    rest_of_columns,
-    column_name_idcs,
-    codes_metadata,
-    output_dir,
-    output_name,
-    num_shards,
-    d_items,
-    d_labitems,
-    warned_codes,
-    max_event_length,
-    debug,
-    df_chunk,
-):
-    code_matching_pattern = re.compile(r"\d+")
-
-    def meds_to_remed_unit(row):
-        events = []
-        digit_offsets = []
-        col_name_offsets = []
-        for event_index in range(len(row[column_name_idcs["code"]])):
-            event = ""
-            digit_offset = []
-            col_name_offset = []
-            for col_name in ["code", "numeric_value"] + rest_of_columns:
-                # do not process something like "icustay_id" or "hadm_id"
-                if "id" in col_name:
-                    continue
-
-                col_event = row[column_name_idcs[col_name]][event_index]
-                if col_event is not None:
-                    col_event = str(col_event)
-                    if col_name == "code":
-                        if col_event in codes_metadata and codes_metadata[col_event] != "":
-                            col_event = codes_metadata[col_event]
-                        else:
-                            do_break = False
-                            items = col_event.split("//")
-                            is_code = [bool(code_matching_pattern.fullmatch(item)) for item in items]
-                            if True in is_code:
-                                if d_items is not None and d_labitems is not None:
-                                    code_idx = is_code.index(True)
-                                    code = items[code_idx]
-
-                                    if code in d_items:
-                                        desc = d_items[code]
-                                    elif code in d_labitems:
-                                        desc = d_labitems[code]
-                                    else:
-                                        do_break = True
-
-                                    if not do_break:
-                                        items[code_idx] = desc
-                                        col_event = "//".join(items)
-                                else:
-                                    do_break = True
-
-                            if do_break and col_event not in warned_codes:
-                                warned_codes.append(col_event)
-                                logger.warning(
-                                    "The dataset contains some codes that are not specified in "
-                                    "the codes metadata, which may not be intended. Note that we "
-                                    f"process this code as it is for now: {col_event}."
-                                )
-                    else:
-                        col_event = re.sub(
-                            r"\d*\.\d+",
-                            lambda x: str(round(float(x.group(0)), 4)),
-                            col_event,
-                        )
-                        event_offset = len(event) + len(col_name) + 1
-                        digit_offset_tmp = [
-                            g.span() for g in re.finditer(r"([0-9]+([.][0-9]*)?|[0-9]+|\.+)", col_event)
-                        ]
-
-                        internal_offset = 0
-                        for start, end in digit_offset_tmp:
-                            digit_offset.append(
-                                (
-                                    event_offset + start + internal_offset,
-                                    event_offset + end + (end - start) * 2 + internal_offset,
-                                )
-                            )
-                            internal_offset += (end - start) * 2
-
-                        col_event = re.sub(r"([0-9\.])", r" \1 ", col_event)
-
-                    col_name_offset.append((len(event), len(event) + len(col_name)))
-                    event += " " + col_name + " " + col_event
-            if len(event) > 0:
-                events.append(event[1:])
-                digit_offsets.append(digit_offset)
-                col_name_offsets.append(col_name_offset)
-
-        tokenized_events = tokenizer(
-            events,
-            add_special_tokens=True,
-            padding="max_length",
-            max_length=max_event_length,
-            truncation=True,
-            return_tensors="np",
-            return_token_type_ids=False,
-            return_attention_mask=True,
-            return_offsets_mapping=True,
-        )
-        lengths_before_padding = tokenized_events["attention_mask"].sum(axis=1)
-
-        input_ids = tokenized_events["input_ids"]
-        dpe_ids = np.zeros(input_ids.shape, dtype=int)
-        for i, digit_offset in enumerate(digit_offsets):
-            for start, end in digit_offset:
-                start_index, end_index = find_boundary_between(
-                    tokenized_events[i].offsets[: lengths_before_padding[i] - 1],
-                    start,
-                    end,
-                )
-
-                # define dpe ids for digits found
-                num_digits = end_index - start_index
-                # 119: token id for "."
-                num_decimal_points = (input_ids[i][start_index:end_index] == 119).sum()
-
-                # integer without decimal point
-                # e.g., for "1 2 3 4 5", assign [10, 9, 8, 7, 6]
-                if num_decimal_points == 0:
-                    dpe_ids[i][start_index:end_index] = list(range(num_digits + 5, 5, -1))
-                # floats
-                # e.g., for "1 2 3 4 5 . 6 7 8 9", assign [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
-                elif num_decimal_points == 1:
-                    num_decimals = (
-                        num_digits
-                        - np.where(input_ids[i][start_index:end_index] == 119)[0][0]  # 119: token id for "."
-                    )
-                    dpe_ids[i][start_index:end_index] = list(
-                        range(num_digits + 5 - num_decimals, 5 - num_decimals, -1)
-                    )
-                # 1 > decimal points where we cannot define dpe ids
-                else:
-                    continue
-        # define type ids
-        # for column names: 2
-        # for column values (contents): 3
-        # for CLS tokens: 5
-        # for SEP tokens: 6
-        type_ids = np.zeros(input_ids.shape, dtype=int)
-        type_ids[:, 0] = 5  # CLS tokens
-        for i, col_name_offset in enumerate(col_name_offsets):
-            type_ids[i][lengths_before_padding[i] - 1] = 6  # SEP tokens
-            # fill with type ids for column values
-            type_ids[i][1 : lengths_before_padding[i] - 1] = 3
-            for start, end in col_name_offset:
-                start_index, end_index = find_boundary_between(
-                    tokenized_events[i].offsets[1 : lengths_before_padding[i] - 1],
-                    start,
-                    end,
-                )
-                # the first offset is always (0, 0) for CLS token, so we adjust it
-                start_index += 1
-                end_index += 1
-                # finally replace with type ids for column names
-                type_ids[i][start_index:end_index] = 2
-
-        return np.stack([input_ids, type_ids, dpe_ids], axis=1).astype(np.uint16)
-
-    events_data = []
-    worker_id = multiprocessing.current_process().name.split("-")[-1]
-    if worker_id == "MainProcess":
-        worker_id = 0
-    else:
-        # worker_id is incremental for every generated pool, so divide with num_shards
-        worker_id = (int(worker_id) - 1) % num_shards  # 1-based -> 0-based indexing
-    if worker_id == 0:
-        progress_bar = tqdm(df_chunk.iter_rows(), total=len(df_chunk))
-        progress_bar.set_description(f"Processing from worker-{worker_id}:")
-    else:
-        progress_bar = df_chunk.iter_rows()
-
-    for row in progress_bar:
-        events_data.append(meds_to_remed_unit(row))
-    data_length = list(map(len, events_data))
-    data_index_offset = np.zeros(len(data_length), dtype=np.int64)
-    data_index_offset[1:] = np.cumsum(data_length[:-1])
-    data_index = pl.Series(
-        "data_index",
-        map(
-            lambda x: [data_index_offset[x] + y for y in range(data_length[x])],
-            range(len(data_length)),
-        ),
-    )
-    events_data = np.concatenate(events_data)
-
-    df_chunk = df_chunk.select(["subject_id", "cohort_end", "cohort_label", "time"])
-    df_chunk = df_chunk.insert_column(4, data_index)
-    df_chunk = df_chunk.explode(["cohort_end", "cohort_label"])
-    df_chunk = df_chunk.group_by(
-        # ["subject_id", "cohort_start", "cohort_end", "cohort_label"], maintain_order=True
-        ["subject_id", "cohort_end", "cohort_label"],
-        maintain_order=True,
-    ).agg(pl.all())
-
-    if debug:
-        df_chunk = df_chunk.with_columns(
-            [
-            pl.col("time").map_elements(lambda x: x[-100:], return_dtype=pl.List(pl.List(str))),
-            pl.col("data_index").map_elements(lambda x: x[-100:], return_dtype=pl.List(pl.List(int)))
-            ]
-        )
-
-    df_chunk = df_chunk.sort(by=["subject_id", "cohort_end"])
-    # regard {subject_id} as {cohort_id}: {subject_id}_{cohort_number}
-    df_chunk = df_chunk.with_columns(pl.col("subject_id").cum_count().over("subject_id").alias("suffix"))
-    df_chunk = df_chunk.with_columns(
-        (pl.col("subject_id").cast(str) + "_" + pl.col("suffix").cast(str)).alias("subject_id")
-    )
-    # data = data.drop("suffix", "cohort_start", "cohort_end")
-    df_chunk = df_chunk.drop("suffix", "cohort_end")
-
-    length_per_subject = {}
-    progress_bar = tqdm(
-        df_chunk.iter_rows(),
-        total=len(df_chunk),
-        desc=f"Writing data from worker-{worker_id}:",
+    # Initialize preprocessor
+    preprocessor = GenHPFPreprocessor(
+        meds_data_dir=MEDS_DATA_DIR,
+        meds_labels_dir=MEDS_LABELS_DIR,
+        meds_metadata_dir=MEDS_METADATA_DIR,
+        meds_output_dir=MEDS_OUTPUT_DIR,
+        max_event_length=MAX_EVENT_LENGTH
     )
 
-    for sample in progress_bar:
-        with h5py.File(str(output_dir / output_name / f"{worker_id}.h5"), "a") as f:
-            if "ehr" in f:
-                result = f["ehr"]
-            else:
-                result = f.create_group("ehr")
+    # Run preprocessing
+    success, process_log_path = preprocessor.run_preprocessing(
+        num_workers=MAX_WORKERS,
+        rebase=True
+    )
 
-            sample_result = result.create_group(sample[0])
-
-            times = np.concatenate(sample[2])
-            data_indices = np.concatenate(sample[3])
-            if debug:
-                data_indices = data_indices[-100:]
-                times = times[-100:]
-
-            data = events_data[data_indices]
-            sample_result.create_dataset("hi", data=data, dtype="i2", compression="lzf", shuffle=True)
-
-            times = [datetime.strptime(x, "%Y-%m-%d %H:%M:%S") for x in times]
-            times = np.cumsum(np.diff(times))
-            times = list(map(lambda x: round(x.total_seconds() / 60), times))
-            times = np.array([0] + times)
-
-            sample_result.create_dataset("time", data=times, dtype="i")
-            sample_result.create_dataset("label", data=int(sample[1]))
-
-            length_per_subject[sample[0]] = (len(times), worker_id)
-    del df_chunk
-
-    return length_per_subject
+    if success:
+        print("\n" + "="*80)
+        print("PREPROCESSING COMPLETED SUCCESSFULLY!")
+        print("="*80)
+        print(f"Output directory: {MEDS_OUTPUT_DIR}")
+        print("\nNext steps:")
+        print("1. Verify your .h5 and .tsv files")
+        print("2. Run training with:")
+        print(f"   genhpf-train dataset.data={MEDS_OUTPUT_DIR} \\")
+        print(f"     model.encoder_max_seq_len=256/384/512 \\")
+        print("     --config-dir ${GENHPF_DIR}/examples/train/genhpf \\")
+        print("     --config-name meds_hierarchical_scr")
+        print("\n3. For testing, use:")
+        print(f"   genhpf-test dataset.data={MEDS_OUTPUT_DIR} \\")
+        print("     model.encoder_max_seq_len=256/384/512 \\")
+        print("     checkpoint.load_checkpoint=/path/to/checkpoint.pt")
+        sys.exit(0)
+    else:
+        print("\n" + "="*80)
+        print("PREPROCESSING FAILED!")
+        print("="*80)
+        print("Check the log files for detailed error information.")
+        if process_log_path:
+            print(f"Process log: {process_log_path}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
