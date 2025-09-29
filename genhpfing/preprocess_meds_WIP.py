@@ -24,6 +24,7 @@ EVENTS_PER_SHARD = 2_000_000
 # Flush cadence: append to H5 every # of events to cap peak RAM
 # FLUSH_EVERY = 250_000
 FLUSH_EVERY = 100_000
+SUBJECTS_PER_BATCH = 2000  # process N subjects at a time to cap RAM
 
 
 logger = logging.getLogger(__name__)
@@ -750,171 +751,316 @@ def meds_to_remed(
 
         return np.stack([input_ids, type_ids, dpe_ids], axis=1).astype(np.uint16)
 
-    events_data = []
-    # worker_id = multiprocessing.current_process().name.split("-")[-1]
-    # if worker_id == "MainProcess":
-    #     worker_id = 0
+# --- Fixing some major stuff for RAM optimization
+# BEGIN COMMENT OUT
+    # events_data = []
+    # # worker_id = multiprocessing.current_process().name.split("-")[-1]
+    # # if worker_id == "MainProcess":
+    # #     worker_id = 0
+    # # else:
+    # #     # worker_id is incremental for every generated pool, so divide with num_shards
+    # #     worker_id = (int(worker_id) - 1) % num_shards  # 1-based -> 0-based indexing
+    # if worker_id == 0:
+    #     progress_bar = tqdm(df_chunk.iter_rows(), total=len(df_chunk))
+    #     # progress_bar.set_description(f"Processing from worker-{worker_id}:")
+    #     progress_bar.set_description(f"Writing data from worker-{worker_id}:")
+
     # else:
-    #     # worker_id is incremental for every generated pool, so divide with num_shards
-    #     worker_id = (int(worker_id) - 1) % num_shards  # 1-based -> 0-based indexing
-    if worker_id == 0:
-        progress_bar = tqdm(df_chunk.iter_rows(), total=len(df_chunk))
-        # progress_bar.set_description(f"Processing from worker-{worker_id}:")
-        progress_bar.set_description(f"Writing data from worker-{worker_id}:")
+    #     progress_bar = df_chunk.iter_rows()
 
-    else:
-        progress_bar = df_chunk.iter_rows()
+    # for row in progress_bar:
+    #     events_data.append(meds_to_remed_unit(row))
+    # data_length = list(map(len, events_data))
+    # data_index_offset = np.zeros(len(data_length), dtype=np.int64)
+    # data_index_offset[1:] = np.cumsum(data_length[:-1])
+    # data_index = pl.Series(
+    #     "data_index",
+    #     map(
+    #         lambda x: [data_index_offset[x] + y for y in range(data_length[x])],
+    #         range(len(data_length)),
+    #     ),
+    # )
+    # # Do not want monolith
+    # # events_data = np.concatenate(events_data)
 
-    for row in progress_bar:
-        events_data.append(meds_to_remed_unit(row))
-    data_length = list(map(len, events_data))
-    data_index_offset = np.zeros(len(data_length), dtype=np.int64)
-    data_index_offset[1:] = np.cumsum(data_length[:-1])
-    data_index = pl.Series(
-        "data_index",
-        map(
-            lambda x: [data_index_offset[x] + y for y in range(data_length[x])],
-            range(len(data_length)),
-        ),
-    )
-    # Do not want monolith
-    # events_data = np.concatenate(events_data)
+    # df_chunk = df_chunk.select(["subject_id", "cohort_end", "cohort_label", "time"])
+    # df_chunk = df_chunk.insert_column(4, data_index)
+    # df_chunk = df_chunk.explode(["cohort_end", "cohort_label"])
+    # df_chunk = df_chunk.group_by(
+    #     # ["subject_id", "cohort_start", "cohort_end", "cohort_label"], maintain_order=True
+    #     ["subject_id", "cohort_end", "cohort_label"],
+    #     maintain_order=True,
+    # ).agg(pl.all())
 
-    df_chunk = df_chunk.select(["subject_id", "cohort_end", "cohort_label", "time"])
-    df_chunk = df_chunk.insert_column(4, data_index)
-    df_chunk = df_chunk.explode(["cohort_end", "cohort_label"])
-    df_chunk = df_chunk.group_by(
-        # ["subject_id", "cohort_start", "cohort_end", "cohort_label"], maintain_order=True
-        ["subject_id", "cohort_end", "cohort_label"],
-        maintain_order=True,
-    ).agg(pl.all())
+    # if debug:
+    #     df_chunk = df_chunk.with_columns(
+    #         [
+    #         pl.col("time").map_elements(lambda x: x[-100:], return_dtype=pl.List(pl.List(str))),
+    #         pl.col("data_index").map_elements(lambda x: x[-100:], return_dtype=pl.List(pl.List(int)))
+    #         ]
+    #     )
 
-    if debug:
-        df_chunk = df_chunk.with_columns(
-            [
-            pl.col("time").map_elements(lambda x: x[-100:], return_dtype=pl.List(pl.List(str))),
-            pl.col("data_index").map_elements(lambda x: x[-100:], return_dtype=pl.List(pl.List(int)))
-            ]
+    # df_chunk = df_chunk.sort(by=["subject_id", "cohort_end"])
+    # # regard {subject_id} as {cohort_id}: {subject_id}_{cohort_number}
+    # df_chunk = df_chunk.with_columns(pl.col("subject_id").cum_count().over("subject_id").alias("suffix"))
+    # df_chunk = df_chunk.with_columns(
+    #     (pl.col("subject_id").cast(str) + "_" + pl.col("suffix").cast(str)).alias("subject_id")
+    # )
+    # # data = data.drop("suffix", "cohort_start", "cohort_end")
+    # df_chunk = df_chunk.drop("suffix", "cohort_end")
+
+    # length_per_subject = {}
+    # progress_bar = tqdm(
+    #     df_chunk.iter_rows(),
+    #     total=len(df_chunk),
+    #     desc=f"Writing data from worker-{worker_id}:",
+    # )
+
+    # # for sample in progress_bar:
+    # #     with h5py.File(str(output_dir / output_name / f"{worker_id}.h5"), "a") as f:
+    # #         if "ehr" in f:
+    # #             result = f["ehr"]
+    # #         else:
+    # #             result = f.create_group("ehr")
+
+    # #         sample_result = result.create_group(sample[0])
+
+    # #         times = np.concatenate(sample[2])
+    # #         data_indices = np.concatenate(sample[3])
+    # #         if debug:
+    # #             data_indices = data_indices[-100:]
+    # #             times = times[-100:]
+
+    # #         data = events_data[data_indices]
+    # #         sample_result.create_dataset("hi", data=data, dtype="i2", compression="lzf", shuffle=True)
+
+    # #         times = [datetime.strptime(x, "%Y-%m-%d %H:%M:%S") for x in times]
+    # #         times = np.cumsum(np.diff(times))
+    # #         times = list(map(lambda x: round(x.total_seconds() / 60), times))
+    # #         times = np.array([0] + times)
+
+    # #         sample_result.create_dataset("time", data=times, dtype="i")
+    # #         sample_result.create_dataset("label", data=int(sample[1]))
+
+    # #         length_per_subject[sample[0]] = (len(times), worker_id)
+    # for sample in progress_bar:
+    #     # sample fields (unchanged from your code):
+    #     #   sample[0] -> subject_id (string after your suffixing)
+    #     #   sample[1] -> label (scalar)
+    #     #   sample[2] -> list of time lists (you concatenate them below)
+    #     #   sample[3] -> list of data_index lists (global event indices for this subject)
+
+    #     subject_id = sample[0]
+    #     label_val  = int(sample[1])
+
+    #     # Build times (unchanged)
+    #     times = np.concatenate(sample[2])
+    #     if debug:
+    #         times = times[-100:]
+    #     times_dt = [datetime.strptime(x, "%Y-%m-%d %H:%M:%S") for x in times]
+    #     times_delta = np.cumsum(np.diff(times_dt))
+    #     times_minutes = list(map(lambda x: round(x.total_seconds() / 60), times_delta))
+    #     times_arr = np.array([0] + times_minutes, dtype=np.int32)
+
+    #     # Build this subject's hi by GATHERING from events_data (list of arrays)
+    #     # without concatenating all events globally.
+    #     #
+    #     # We will map each global index back to (row_idx, offset_in_row) using
+    #     # your existing data_index_offset and data_length arrays.
+    #     data_indices = np.concatenate(sample[3])
+    #     if debug:
+    #         data_indices = data_indices[-100:]
+
+    #     # Prepare a container and fill row-by-row to avoid a huge global array.
+    #     E = int(data_indices.shape[0])
+    #     hi_subj = np.empty((E, 3, max_event_length), dtype=np.uint16)
+
+    #     # Helper: for a given global index g, find row j s.t. data_index_offset[j] <= g < data_index_offset[j]+data_length[j]
+    #     from bisect import bisect_right
+    #     for write_pos, g in enumerate(data_indices):
+    #         j = bisect_right(data_index_offset, g) - 1  # row index in events_data
+    #         local = int(g - data_index_offset[j])       # offset within that row's array
+    #         hi_subj[write_pos] = events_data[j][local]
+
+    #     # If adding this subject would overflow the shard budget, roll to a new shard first
+    #     if events_in_current_shard + E > EVENTS_PER_SHARD:
+    #         _close_shard()
+    #         current_shard_path = _open_new_shard()
+
+    #     # Ensure the root group exists in this shard
+    #     if "ehr" in current_h5:
+    #         result = current_h5["ehr"]
+    #     else:
+    #         result = current_h5.create_group("ehr")
+
+    #     # Preserve your naming convention (you already suffixed subject_id earlier)
+    #     sample_result = result.create_group(subject_id)
+    #     sample_result.create_dataset("hi",   data=hi_subj,   dtype="i2", compression="lzf", shuffle=True)
+    #     sample_result.create_dataset("time", data=times_arr, dtype="i")
+    #     sample_result.create_dataset("label", data=label_val)
+
+    #     # Update counters and manifest
+    #     events_in_current_shard += E
+    #     events_since_flush      += E
+    #     length_per_subject[subject_id] = (int(times_arr.shape[0]), worker_id)
+
+    #     # Append one manifest row for this subject (subject_id, events, shard filename)
+    #     from pathlib import Path as _P
+    #     with open(worker_manifest_path, "a") as _mf:
+    #         _mf.write(f"{subject_id}\t{E}\t{_P(current_shard_path).name}\n")
+
+    #     # Flush cadence to cap peak RAM
+    #     if events_since_flush >= FLUSH_EVERY:
+    #         current_h5.flush()
+    #         events_since_flush = 0
+
+    #     # Rollover if shard is full
+    #     if events_in_current_shard >= EVENTS_PER_SHARD:
+    #         _close_shard()
+    #         current_shard_path = _open_new_shard()
+
+# END COMMENT OUT
+    # --- STREAMED SUBJECT-BATCH PROCESSING (caps memory) ---
+
+    # We’ll accumulate subject lengths across all batches here
+    length_per_subject = {}
+
+    # Build list of unique subjects in this worker chunk
+    subjects_all = df_chunk["subject_id"].unique().to_list()
+    B = SUBJECTS_PER_BATCH
+
+    for b_start in range(0, len(subjects_all), B):
+        batch_subjects = subjects_all[b_start:b_start + B]
+
+        # 1) Slice this worker’s dataframe to just this batch of subjects
+        df_sub = df_chunk.filter(pl.col("subject_id").is_in(batch_subjects))
+
+        # 2) Tokenize this batch only (no global accumulation)
+        events_data = []
+        if worker_id == 0:
+            progress_bar = tqdm(df_sub.iter_rows(), total=len(df_sub))
+            progress_bar.set_description(f"Tokenizing worker-{worker_id} batch {b_start//B}")
+        else:
+            progress_bar = df_sub.iter_rows()
+
+        for row in progress_bar:
+            events_data.append(meds_to_remed_unit(row))
+
+        # 3) Build global indices for THIS BATCH ONLY
+        data_length = list(map(len, events_data))
+        data_index_offset = np.zeros(len(data_length), dtype=np.int64)
+        if len(data_length) > 0:
+            data_index_offset[1:] = np.cumsum(data_length[:-1])
+
+        data_index = pl.Series(
+            "data_index",
+            map(lambda x: [data_index_offset[x] + y for y in range(data_length[x])],
+                range(len(data_length))),
         )
 
-    df_chunk = df_chunk.sort(by=["subject_id", "cohort_end"])
-    # regard {subject_id} as {cohort_id}: {subject_id}_{cohort_number}
-    df_chunk = df_chunk.with_columns(pl.col("subject_id").cum_count().over("subject_id").alias("suffix"))
-    df_chunk = df_chunk.with_columns(
-        (pl.col("subject_id").cast(str) + "_" + pl.col("suffix").cast(str)).alias("subject_id")
-    )
-    # data = data.drop("suffix", "cohort_start", "cohort_end")
-    df_chunk = df_chunk.drop("suffix", "cohort_end")
+        # 4) Rebuild the per-subject aggregation for THIS BATCH ONLY
+        agg = df_sub.select(["subject_id", "cohort_end", "cohort_label", "time"])
+        agg = agg.insert_column(4, data_index)
+        agg = agg.explode(["cohort_end", "cohort_label"])
+        agg = agg.group_by(
+            ["subject_id", "cohort_end", "cohort_label"], maintain_order=True
+        ).agg(pl.all())
 
-    length_per_subject = {}
-    progress_bar = tqdm(
-        df_chunk.iter_rows(),
-        total=len(df_chunk),
-        desc=f"Writing data from worker-{worker_id}:",
-    )
-
-    # for sample in progress_bar:
-    #     with h5py.File(str(output_dir / output_name / f"{worker_id}.h5"), "a") as f:
-    #         if "ehr" in f:
-    #             result = f["ehr"]
-    #         else:
-    #             result = f.create_group("ehr")
-
-    #         sample_result = result.create_group(sample[0])
-
-    #         times = np.concatenate(sample[2])
-    #         data_indices = np.concatenate(sample[3])
-    #         if debug:
-    #             data_indices = data_indices[-100:]
-    #             times = times[-100:]
-
-    #         data = events_data[data_indices]
-    #         sample_result.create_dataset("hi", data=data, dtype="i2", compression="lzf", shuffle=True)
-
-    #         times = [datetime.strptime(x, "%Y-%m-%d %H:%M:%S") for x in times]
-    #         times = np.cumsum(np.diff(times))
-    #         times = list(map(lambda x: round(x.total_seconds() / 60), times))
-    #         times = np.array([0] + times)
-
-    #         sample_result.create_dataset("time", data=times, dtype="i")
-    #         sample_result.create_dataset("label", data=int(sample[1]))
-
-    #         length_per_subject[sample[0]] = (len(times), worker_id)
-    for sample in progress_bar:
-        # sample fields (unchanged from your code):
-        #   sample[0] -> subject_id (string after your suffixing)
-        #   sample[1] -> label (scalar)
-        #   sample[2] -> list of time lists (you concatenate them below)
-        #   sample[3] -> list of data_index lists (global event indices for this subject)
-
-        subject_id = sample[0]
-        label_val  = int(sample[1])
-
-        # Build times (unchanged)
-        times = np.concatenate(sample[2])
         if debug:
-            times = times[-100:]
-        times_dt = [datetime.strptime(x, "%Y-%m-%d %H:%M:%S") for x in times]
-        times_delta = np.cumsum(np.diff(times_dt))
-        times_minutes = list(map(lambda x: round(x.total_seconds() / 60), times_delta))
-        times_arr = np.array([0] + times_minutes, dtype=np.int32)
+            agg = agg.with_columns([
+                pl.col("time").map_elements(lambda x: x[-100:], return_dtype=pl.List(pl.List(str))),
+                pl.col("data_index").map_elements(lambda x: x[-100:], return_dtype=pl.List(pl.List(int))),
+            ])
 
-        # Build this subject's hi by GATHERING from events_data (list of arrays)
-        # without concatenating all events globally.
-        #
-        # We will map each global index back to (row_idx, offset_in_row) using
-        # your existing data_index_offset and data_length arrays.
-        data_indices = np.concatenate(sample[3])
-        if debug:
-            data_indices = data_indices[-100:]
+        agg = agg.sort(by=["subject_id", "cohort_end"])
+        agg = agg.with_columns(pl.col("subject_id").cum_count().over("subject_id").alias("suffix"))
+        agg = agg.with_columns(
+            (pl.col("subject_id").cast(str) + "_" + pl.col("suffix").cast(str)).alias("subject_id")
+        )
+        agg = agg.drop("suffix", "cohort_end")
 
-        # Prepare a container and fill row-by-row to avoid a huge global array.
-        E = int(data_indices.shape[0])
-        hi_subj = np.empty((E, 3, max_event_length), dtype=np.uint16)
-
-        # Helper: for a given global index g, find row j s.t. data_index_offset[j] <= g < data_index_offset[j]+data_length[j]
-        from bisect import bisect_right
-        for write_pos, g in enumerate(data_indices):
-            j = bisect_right(data_index_offset, g) - 1  # row index in events_data
-            local = int(g - data_index_offset[j])       # offset within that row's array
-            hi_subj[write_pos] = events_data[j][local]
-
-        # If adding this subject would overflow the shard budget, roll to a new shard first
-        if events_in_current_shard + E > EVENTS_PER_SHARD:
-            _close_shard()
-            current_shard_path = _open_new_shard()
-
-        # Ensure the root group exists in this shard
-        if "ehr" in current_h5:
-            result = current_h5["ehr"]
+        # 5) Write this batch’s subjects immediately, then discard arrays
+        if worker_id == 0:
+            write_pb = tqdm(agg.iter_rows(), total=len(agg),
+                            desc=f"Writing worker-{worker_id} batch {b_start//B}")
         else:
-            result = current_h5.create_group("ehr")
+            write_pb = agg.iter_rows()
 
-        # Preserve your naming convention (you already suffixed subject_id earlier)
-        sample_result = result.create_group(subject_id)
-        sample_result.create_dataset("hi",   data=hi_subj,   dtype="i2", compression="lzf", shuffle=True)
-        sample_result.create_dataset("time", data=times_arr, dtype="i")
-        sample_result.create_dataset("label", data=label_val)
+        from bisect import bisect_right
 
-        # Update counters and manifest
-        events_in_current_shard += E
-        events_since_flush      += E
-        length_per_subject[subject_id] = (int(times_arr.shape[0]), worker_id)
+        for sample in write_pb:
+            # sample fields:
+            #   sample[0] -> subject_id (string, with _suffix)
+            #   sample[1] -> label (scalar)
+            #   sample[2] -> list of time lists (concat -> per-subject times)
+            #   sample[3] -> list of data_index lists (global indices within *this batch*)
 
-        # Append one manifest row for this subject (subject_id, events, shard filename)
-        from pathlib import Path as _P
-        with open(worker_manifest_path, "a") as _mf:
-            _mf.write(f"{subject_id}\t{E}\t{_P(current_shard_path).name}\n")
+            subject_id = sample[0]
+            label_val = int(sample[1])
 
-        # Flush cadence to cap peak RAM
-        if events_since_flush >= FLUSH_EVERY:
-            current_h5.flush()
-            events_since_flush = 0
+            # Times → minutes delta
+            times = np.concatenate(sample[2])
+            if debug:
+                times = times[-100:]
+            times_dt = [datetime.strptime(x, "%Y-%m-%d %H:%M:%S") for x in times]
+            times_delta = np.cumsum(np.diff(times_dt))
+            times_minutes = list(map(lambda x: round(x.total_seconds() / 60), times_delta))
+            times_arr = np.array([0] + times_minutes, dtype=np.int32)
 
-        # Rollover if shard is full
-        if events_in_current_shard >= EVENTS_PER_SHARD:
-            _close_shard()
-            current_shard_path = _open_new_shard()
+            # Gather this subject’s events from the *batch* events_data
+            data_indices = np.concatenate(sample[3])
+            if debug:
+                data_indices = data_indices[-100:]
+
+            E = int(data_indices.shape[0])
+            hi_subj = np.empty((E, 3, max_event_length), dtype=np.uint16)
+
+            # Map each global index g back to (row j, offset within that row)
+            for write_pos, g in enumerate(data_indices):
+                j = bisect_right(data_index_offset, g) - 1
+                local = int(g - data_index_offset[j])
+                hi_subj[write_pos] = events_data[j][local]
+
+            # Rollover shard if needed
+            if events_in_current_shard + E > EVENTS_PER_SHARD:
+                _close_shard()
+                current_shard_path = _open_new_shard()
+
+            # Ensure shard root group
+            if "ehr" in current_h5:
+                result = current_h5["ehr"]
+            else:
+                result = current_h5.create_group("ehr")
+
+            # Write one subject
+            sample_result = result.create_group(subject_id)
+            sample_result.create_dataset("hi",   data=hi_subj,   dtype="i2", compression="lzf", shuffle=True)
+            sample_result.create_dataset("time", data=times_arr, dtype="i")
+            sample_result.create_dataset("label", data=label_val)
+
+            # Update counters + per-worker manifest
+            events_in_current_shard += E
+            events_since_flush += E
+            length_per_subject[subject_id] = (int(times_arr.shape[0]), worker_id)
+
+            from pathlib import Path as _P
+            with open(worker_manifest_path, "a") as _mf:
+                _mf.write(f"{subject_id}\t{E}\t{_P(current_shard_path).name}\n")
+
+            # Flush cadence
+            if events_since_flush >= FLUSH_EVERY:
+                current_h5.flush()
+                events_since_flush = 0
+
+            # Rollover if shard is full
+            if events_in_current_shard >= EVENTS_PER_SHARD:
+                _close_shard()
+                current_shard_path = _open_new_shard()
+
+        # Done with this batch → free memory
+        del events_data, data_length, data_index_offset, agg, df_sub
+
+    
     # Close last shard from this worker
     _close_shard()
 
