@@ -21,8 +21,9 @@ from transformers import AutoTokenizer
 # Target ≈ 2.0M events per shard (~3–4 GB per H5 file with your schema)
 EVENTS_PER_SHARD = 2_000_000
 
-# Flush cadence: append to H5 every ~250k events to cap peak RAM
-FLUSH_EVERY = 250_000
+# Flush cadence: append to H5 every # of events to cap peak RAM
+# FLUSH_EVERY = 250_000
+FLUSH_EVERY = 100_000
 
 
 logger = logging.getLogger(__name__)
@@ -556,7 +557,8 @@ def meds_to_remed(
     from pathlib import Path
 
     # Each split writes under: <output_dir>/<output_name>/
-    split_dir = Path(output_dir)
+    # split_dir = Path(output_dir)
+    split_dir = Path(output_dir) / output_name
     split_dir.mkdir(parents=True, exist_ok=True)
 
     # Per-worker manifest fragments (merged in main at the end)
@@ -749,15 +751,17 @@ def meds_to_remed(
         return np.stack([input_ids, type_ids, dpe_ids], axis=1).astype(np.uint16)
 
     events_data = []
-    worker_id = multiprocessing.current_process().name.split("-")[-1]
-    if worker_id == "MainProcess":
-        worker_id = 0
-    else:
-        # worker_id is incremental for every generated pool, so divide with num_shards
-        worker_id = (int(worker_id) - 1) % num_shards  # 1-based -> 0-based indexing
+    # worker_id = multiprocessing.current_process().name.split("-")[-1]
+    # if worker_id == "MainProcess":
+    #     worker_id = 0
+    # else:
+    #     # worker_id is incremental for every generated pool, so divide with num_shards
+    #     worker_id = (int(worker_id) - 1) % num_shards  # 1-based -> 0-based indexing
     if worker_id == 0:
         progress_bar = tqdm(df_chunk.iter_rows(), total=len(df_chunk))
-        progress_bar.set_description(f"Processing from worker-{worker_id}:")
+        # progress_bar.set_description(f"Processing from worker-{worker_id}:")
+        progress_bar.set_description(f"Writing data from worker-{worker_id}:")
+
     else:
         progress_bar = df_chunk.iter_rows()
 
