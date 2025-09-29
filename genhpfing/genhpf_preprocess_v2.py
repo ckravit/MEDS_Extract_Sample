@@ -278,7 +278,13 @@ class GenHPFPreprocessor:
         self.logger.info("="*80)
 
         # Create output directory
-        Path(self.meds_output_dir).mkdir(parents=True, exist_ok=True)
+        # Path(self.meds_output_dir).mkdir(parents=True, exist_ok=True)
+        
+        # IMPORTANT:
+        # The GenHPF CLI errors if --output_dir already exists and --rebase is NOT passed.
+        # So only pre-create when rebase=True (the CLI will wipe & recreate it anyway).
+        if rebase:
+            Path(self.meds_output_dir).mkdir(parents=True, exist_ok=True)
 
         # Setup log file for subprocess
         process_log = self.log_dir / f"genhpf_process_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -431,55 +437,84 @@ def main():
     # MEDS_OUTPUT_DIR = "/opt/data/workingdir/ckravit/MEDS/MEDS220/genHPF/output/"
     src_dir = '/opt/data/workingdir/ckravit/MEDS/MEDS220/genHPF/'
     MEDS_DATA_DIR = '/opt/data/workingdir/ckravit/MEDS/MEDS220/DATA/MEDS_output/data/'
+
+    # Leave empty ("") when you want to process the whole directory
     MEDS_INDIV_PARQUET = '/opt/data/workingdir/ckravit/MEDS/MEDS220/DATA/MEDS_output/data/train/0.parquet'
+
+    # If doing a specific MEDS_INDIV_PARQUET file, make sure you point to the right subfolder
     MEDS_LABELS_DIR = '/opt/data/workingdir/ckravit/MEDS/MEDS220/ACES/testhort/results/'
+    MEDS_LABELS_DIR = '/opt/data/workingdir/ckravit/MEDS/MEDS220/ACES/testhort/results/train/'
+
+
     MEDS_METADATA_DIR = '/opt/data/workingdir/ckravit/MEDS/MEDS220/DATA/MEDS_output/metadata/'
     # MEDS_OUTPUT_DIR = f'{src_dir}output/'
-    MEDS_OUTPUT_DIR = '/opt/data/commonfilesharePHI/MEDS_shared/ckravit/genhpf/output'
+    MEDS_OUTPUT_DIR = '/opt/data/commonfilesharePHI/MEDS_shared/ckravit/genhpf/output/pretrain/'
 
     # Processing parameters
     MAX_EVENT_LENGTH = 256  # Increased from default 128 to handle longer events
     MAX_WORKERS = 2  # Let system auto-calculate (set to None), or set specific number
 
+    # Choose the data argument: single file if provided and exists; otherwise the directory
+    DATA_ARG = MEDS_INDIV_PARQUET if (MEDS_INDIV_PARQUET and Path(MEDS_INDIV_PARQUET).exists()) else MEDS_DATA_DIR
+
     # Initialize preprocessor
     preprocessor = GenHPFPreprocessor(
-        meds_data_dir=MEDS_DATA_DIR,
+        meds_data_dir=str(DATA_ARG),
         meds_labels_dir=MEDS_LABELS_DIR,
         meds_metadata_dir=MEDS_METADATA_DIR,
         meds_output_dir=MEDS_OUTPUT_DIR,
         max_event_length=MAX_EVENT_LENGTH
     )
+    log = preprocessor.logger
 
-    # Run preprocessing
+    if str(DATA_ARG).endswith(".parquet") or str(DATA_ARG).endswith(".csv"):
+        log.info(f"[Runner] Mode: SINGLE FILE → {DATA_ARG}")
+    else:
+        log.info(f"[Runner] Mode: DIRECTORY   → {DATA_ARG}")
+
+    # # Run preprocessing
+    # success, process_log_path = preprocessor.run_preprocessing(
+    #     num_workers=MAX_WORKERS,
+    #     rebase=True
+    # )
+
+    # If running a single Parquet, do NOT rebase the whole output dir.
+    # For directory-wide runs, you can keep rebase=True.
+    REBASE = not (MEDS_INDIV_PARQUET and Path(MEDS_INDIV_PARQUET).exists())
+
     success, process_log_path = preprocessor.run_preprocessing(
         num_workers=MAX_WORKERS,
-        rebase=True
+        rebase=REBASE
     )
 
+
+
     if success:
-        print("\n" + "="*80)
-        print("PREPROCESSING COMPLETED SUCCESSFULLY!")
-        print("="*80)
-        print(f"Output directory: {MEDS_OUTPUT_DIR}")
-        print("\nNext steps:")
-        print("1. Verify your .h5 and .tsv files")
-        print("2. Run training with:")
-        print(f"   genhpf-train dataset.data={MEDS_OUTPUT_DIR} \\")
-        print(f"     model.encoder_max_seq_len=256/384/512 \\")
-        print("     --config-dir ${GENHPF_DIR}/examples/train/genhpf \\")
-        print("     --config-name meds_hierarchical_scr")
-        print("\n3. For testing, use:")
-        print(f"   genhpf-test dataset.data={MEDS_OUTPUT_DIR} \\")
-        print("     model.encoder_max_seq_len=256/384/512 \\")
-        print("     checkpoint.load_checkpoint=/path/to/checkpoint.pt")
+        # print("\n" + "="*80)
+        log.info("="*80)
+        log.info("PREPROCESSING COMPLETED SUCCESSFULLY!")
+        log.info("="*80)
+        log.info(f"Output directory: {MEDS_OUTPUT_DIR}")
+        log.info("\nNext steps:")
+        log.info("1. Verify your .h5 and .tsv files")
+        log.info("2. Run training with:")
+        log.info(f"   genhpf-train dataset.data={MEDS_OUTPUT_DIR} \\")
+        log.info(f"     model.encoder_max_seq_len=256/384/512 \\")
+        log.info("     --config-dir ${GENHPF_DIR}/examples/train/genhpf \\")
+        log.info("     --config-name meds_hierarchical_scr")
+        log.info("\n3. For testing, use:")
+        log.info(f"   genhpf-test dataset.data={MEDS_OUTPUT_DIR} \\")
+        log.info("     model.encoder_max_seq_len=256/384/512 \\")
+        log.info("     checkpoint.load_checkpoint=/path/to/checkpoint.pt")
         sys.exit(0)
     else:
-        print("\n" + "="*80)
-        print("PREPROCESSING FAILED!")
-        print("="*80)
-        print("Check the log files for detailed error information.")
+        # print("\n" + "="*80)
+        log.info("="*80)
+        log.info("PREPROCESSING FAILED!")
+        log.info("="*80)
+        log.error("Check the log files for detailed error information.")
         if process_log_path:
-            print(f"Process log: {process_log_path}")
+            log.error(f"Process log: {process_log_path}")
         sys.exit(1)
 
 
