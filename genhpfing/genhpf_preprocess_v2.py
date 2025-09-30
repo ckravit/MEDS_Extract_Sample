@@ -575,7 +575,6 @@ class GenHPFPreprocessor:
 
         # --- redirect all temp files from /tmp to a big, known folder on the output volume ---
         scratch_dir = Path(self.meds_output_dir) / "_scratch_tmp"
-        # scratch_dir = Path("/opt/data/commonfilesharePHI/MEDS_shared/ckravit/genhpf/output/") / "_scratch_tmp"
         scratch_dir.mkdir(parents=True, exist_ok=True)
 
         # Build child environment
@@ -810,18 +809,34 @@ def main():
 
 
     MEDS_METADATA_DIR = '/opt/data/workingdir/ckravit/MEDS/MEDS220/DATA/MEDS_output/metadata/'
+    
     # MEDS_OUTPUT_DIR = f'{src_dir}output/'
-    MEDS_OUTPUT_DIR = '/opt/data/commonfilesharePHI/MEDS_shared/ckravit/genhpf/output/train/'
-    # --- Auto-switch output dir if running a SINGLE file (no rebase) and the dir already exists ---
+    # Base output directory (do NOT point this at '.../train/')
+    BASE_OUTPUT_DIR = '/opt/data/commonfilesharePHI/MEDS_shared/ckravit/genhpf/output'
+
     # Decide if we're running a single file or a directory
     SINGLE_FILE = bool(MEDS_INDIV_PARQUET) and Path(MEDS_INDIV_PARQUET).exists()
 
-    # If SINGLE FILE and output_dir already exists (and we won't rebase), pick a fresh output dir to avoid the CLI "exists" error
     if SINGLE_FILE:
-        out_path = Path(MEDS_OUTPUT_DIR)
-        if out_path.exists():
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            MEDS_OUTPUT_DIR = str(out_path.parent / f"{out_path.name}_run_{ts}")
+        # Single-file mode: do NOT use --rebase. Always a fresh run dir.
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        MEDS_OUTPUT_DIR = str(Path(BASE_OUTPUT_DIR) / f"run_{ts}")
+    else:
+        # Directory mode: use the base; run_preprocessing will pass --rebase=True
+        MEDS_OUTPUT_DIR = BASE_OUTPUT_DIR
+
+
+    # MEDS_OUTPUT_DIR = '/opt/data/commonfilesharePHI/MEDS_shared/ckravit/genhpf/output/train/'
+    # # --- Auto-switch output dir if running a SINGLE file (no rebase) and the dir already exists ---
+    # # Decide if we're running a single file or a directory
+    # SINGLE_FILE = bool(MEDS_INDIV_PARQUET) and Path(MEDS_INDIV_PARQUET).exists()
+
+    # # If SINGLE FILE and output_dir already exists (and we won't rebase), pick a fresh output dir to avoid the CLI "exists" error
+    # if SINGLE_FILE:
+    #     out_path = Path(MEDS_OUTPUT_DIR)
+    #     if out_path.exists():
+    #         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    #         MEDS_OUTPUT_DIR = str(out_path.parent / f"{out_path.name}_run_{ts}")
 
 
     # Processing parameters
