@@ -630,10 +630,10 @@ class GenHPFPreprocessor:
             return False, self._process_log_path
 
         # Build the GenHPF command (ensure we DO NOT add --rebase; path must not exist)
-        data_arg = self.meds_indiv_parquet or self.meds_data_dir
+        # data_arg = self.meds_indiv_parquet or self.meds_data_dir
         command = [
             "genhpf-preprocess-meds",
-            str(data_arg),
+            self.meds_data_dir,
             "--cohort", str(self.cohort_dir),
             "--metadata_dir", str(self.metadata_dir),
             "--output_dir", str(final_output_dir),
