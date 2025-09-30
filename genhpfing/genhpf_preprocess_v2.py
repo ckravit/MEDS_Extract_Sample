@@ -506,16 +506,80 @@ class GenHPFPreprocessor:
             pass
 
     def _cleanup_scratch(self):
-        # Clean our scratch/batch temp dirs under the output dir
+        """
+        Remove per-run scratch under meds_output_dir/_scratch_files/<run> 
+        and any per-run batch staging the preprocessor might have left under the final output.
+        """
+        # Scratch under meds_output_dir/_scratch_files/<run>
+        try:
+            split = self._detect_split_name()
+            # We don't know the exact <run> name if we chose the timestamped one, 
+            # so clean any scratch older than ~1 day for this split.
+            scratch_base = Path(self.meds_output_dir) / "_scratch_files"
+            if scratch_base.exists():
+                now = time.time()
+                for p in scratch_base.glob(f"{split}*"):
+                    try:
+                        if (now - p.stat().st_mtime) > 24 * 3600:
+                            shutil.rmtree(p, ignore_errors=True)
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.logger.warning(f"Scratch cleanup skipped: {e}")
+
+        # If the GenHPF preprocessor creates batch staging under the output dir (e.g., _tmp_batches), remove it
+        try:
+            base = Path(self.meds_output_dir)
+            for p in base.glob(f"{split}*/_tmp_batches"):
+                shutil.rmtree(p, ignore_errors=True)
+        except Exception:
+            pass
+
+
+    def _detect_split_name(self) -> str:
+        """
+        Decide which split name to use for output ('train', 'valid', 'test', ...).
+        If an individual parquet is provided, use its parent folder name (e.g., 'train'). 
+        Otherwise fall back to 'train'.
+        """
+        try:
+            # Prefer individual parquet path if present
+            data_arg = self.meds_indiv_parquet or self.meds_data_dir
+            p = Path(data_arg)
+            if p.is_file():
+                # .../data/train/0.parquet  -> 'train'
+                return p.parent.name
+            # If it's a directory like .../data/train/ -> 'train'
+            return p.name if p.exists() else "train"
+        except Exception:
+            return "train"
+
+    def _compute_output_dir_for_run(self) -> Path:
+        """
+        Final output dir to pass to GenHPF.
+        If meds_output_dir/<split> already exists, pick meds_output_dir/<split>_<YYYYmmdd_HHMMSS>
+        (no 'run_' prefix).
+        IMPORTANT: we DO NOT create this path here; GenHPF must create it.
+        """
         base = Path(self.meds_output_dir)
-        for d in ("_scratch_tmp", "_tmp_batches"):
-            p = base / d
-            if p.exists():
-                try:
-                    shutil.rmtree(p)
-                    self.logger.info(f"Cleaned {p}")
-                except Exception as e:
-                    self.logger.warning(f"Could not clean {p}: {e}")
+        split = self._detect_split_name()
+        cand = base / split
+        if cand.exists():
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            cand = base / f"{split}_{ts}"
+        return cand
+
+    def _compute_scratch_dir_for_run(self, out_dir: Path) -> Path:
+        """
+        Scratch directory on the SAME volume as meds_output_dir, under _scratch_files/<basename>.
+        We create this one and point TMPDIR/ARROW_TMPDIR to it.
+        """
+        base = Path(self.meds_output_dir) / "_scratch_files"
+        # One scratch dir per run; use the leaf name of the chosen output dir
+        scratch = base / out_dir.name
+        scratch.mkdir(parents=True, exist_ok=True)
+        return scratch
+
 
 
     def run_preprocessing(self, num_workers: int = None, rebase: bool = True) -> Tuple[bool, Optional[Path]]:
@@ -532,15 +596,49 @@ class GenHPFPreprocessor:
         # Estimate processing time
         estimated_time = self.estimate_processing_time(num_workers)
 
-        # Construct command
+        # # Construct command
+        # command = [
+        #     "genhpf-preprocess-meds",
+        #     self.meds_data_dir,
+        #     "--cohort", self.meds_labels_dir,
+        #     "--metadata_dir", self.meds_metadata_dir,
+        #     "--output_dir", self.meds_output_dir,
+        #     "--workers", str(num_workers),
+        #     "--max_event_length", str(self.max_event_length)
+        # ]
+
+        # Decide the final output directory to pass to GenHPF (do NOT create it here)
+        final_output_dir = self._compute_output_dir_for_run()
+
+        # Redirect all temp files to the same volume as meds_output_dir, 
+        # under _scratch_files/<final_output_dir.name>/
+        scratch_dir = self._compute_scratch_dir_for_run(final_output_dir)
+
+        self.logger.info(f"Output will be written to: {final_output_dir}")
+        self.logger.info(f"Scratch/temp redirected to: {scratch_dir}")
+
+        # Child environment: keep spills off /tmp and on the big output volume
+        child_env = os.environ.copy()
+        child_env["TMPDIR"]       = str(scratch_dir)
+        child_env["TEMP"]         = str(scratch_dir)
+        child_env["TMP"]          = str(scratch_dir)
+        child_env["ARROW_TMPDIR"] = str(scratch_dir)
+
+        # Optional: abort early if the scratch mount looks too tight
+        if shutil.disk_usage(scratch_dir).free < 20 * 1024**3:  # 20 GB
+            self.logger.error(f"Not enough free space in {scratch_dir}; need >= 20 GB.")
+            return False, self._process_log_path
+
+        # Build the GenHPF command (ensure we DO NOT add --rebase; path must not exist)
+        data_arg = self.meds_indiv_parquet or self.meds_data_dir
         command = [
             "genhpf-preprocess-meds",
-            self.meds_data_dir,
-            "--cohort", self.meds_labels_dir,
-            "--metadata_dir", self.meds_metadata_dir,
-            "--output_dir", self.meds_output_dir,
-            "--workers", str(num_workers),
-            "--max_event_length", str(self.max_event_length)
+            str(data_arg),
+            "--cohort", str(self.cohort_dir),
+            "--metadata_dir", str(self.metadata_dir),
+            "--output_dir", str(final_output_dir),
+            "--workers", str(self.num_workers),
+            "--max_event_length", str(self.max_event_length),
         ]
 
         if rebase:
@@ -574,22 +672,24 @@ class GenHPFPreprocessor:
         self.last_progress_time = self.start_time
 
         # --- redirect all temp files from /tmp to a big, known folder on the output volume ---
-        scratch_dir = Path(self.meds_output_dir) / "_scratch_tmp"
-        scratch_dir.mkdir(parents=True, exist_ok=True)
+        # scratch_dir = Path(self.meds_output_dir) / "_scratch_tmp"
+        # scratch_dir.mkdir(parents=True, exist_ok=True)
 
-        # Build child environment
-        child_env = os.environ.copy()
-        # Generic temp vars respected by Python/tempfile and many libs
-        child_env["TMPDIR"] = str(scratch_dir)
-        child_env["TEMP"]  = str(scratch_dir)
-        child_env["TMP"]   = str(scratch_dir)
-        # Arrow spill directory (used by PyArrow/Polars)
-        child_env["ARROW_TMPDIR"] = str(scratch_dir)
 
-        # Optional: fail fast if free space looks too low (tune threshold)
-        if shutil.disk_usage(scratch_dir).free < 20 * 1024**3:  # 20 GB
-            self.logger.error(f"Not enough free space in {scratch_dir}; need >= 20 GB.")
-            return False, process_log
+
+        # # Build child environment
+        # child_env = os.environ.copy()
+        # # Generic temp vars respected by Python/tempfile and many libs
+        # child_env["TMPDIR"] = str(scratch_dir)
+        # child_env["TEMP"]  = str(scratch_dir)
+        # child_env["TMP"]   = str(scratch_dir)
+        # # Arrow spill directory (used by PyArrow/Polars)
+        # child_env["ARROW_TMPDIR"] = str(scratch_dir)
+
+        # # Optional: fail fast if free space looks too low (tune threshold)
+        # if shutil.disk_usage(scratch_dir).free < 20 * 1024**3:  # 20 GB
+        #     self.logger.error(f"Not enough free space in {scratch_dir}; need >= 20 GB.")
+        #     return False, process_log
 
 
         try:
