@@ -438,7 +438,6 @@ class GenHPFPreprocessor:
 
     def _write_pid_files(self, pid: int):
         pgid = os.getpgid(pid)
-        # Write state files under the log directory (always exists)
         state_dir = self.log_dir
         state_dir.mkdir(parents=True, exist_ok=True)
         pid_path  = state_dir / "genhpf_current.pid"
@@ -454,6 +453,7 @@ class GenHPFPreprocessor:
                 p.unlink()
             except FileNotFoundError:
                 pass
+
 
     def _terminate_process_group(self, process: subprocess.Popen, reason: str = "user request"):
         """
@@ -605,11 +605,29 @@ class GenHPFPreprocessor:
 
                 try:
                     self.logger.info(f"Process started with PID: {process.pid} (group kill enabled)")
-                    # --- your existing monitoring/heartbeat loop here (if you keep it) ---
-                    # If you stream stdout instead of polling, that’s fine too.
-                    # Finally, block until child exits:
+
+                    # --- wait for child to exit ---
                     rc = process.wait()
                     self.logger.info(f"Process exited with return code {rc}")
+
+                    total_time = datetime.now() - self.start_time
+
+                    if rc == 0:
+                        self.logger.info("=" * 78)
+                        self.logger.info("PREPROCESSING COMPLETED SUCCESSFULLY!")
+                        self.logger.info(f"Total time: {total_time}")
+                        self.logger.info("=" * 78)
+                        if self.verify_outputs():
+                            return True, process_log
+                        else:
+                            self.logger.error("Output verification failed")
+                            return False, process_log
+                    else:
+                        self.logger.error("Preprocessing failed.")
+                        self.logger.error(f"Check process log for details: {process_log}")
+                        self._cleanup_scratch()
+                        return False, process_log
+
                 except KeyboardInterrupt:
                     # Ctrl+C in the wrapper: stop the whole tree
                     self._terminate_process_group(process, reason="KeyboardInterrupt")
