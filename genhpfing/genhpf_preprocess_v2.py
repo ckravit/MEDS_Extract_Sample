@@ -645,7 +645,7 @@ class GenHPFPreprocessor:
             self.meds_data_dir,
             "--cohort", self.meds_labels_dir,
             "--metadata_dir", self.meds_metadata_dir,
-            "--output_dir", final_output_dir,
+            "--output_dir", str(final_output_dir),
             "--workers", str(num_workers),
             "--max_event_length", str(self.max_event_length)
         ]
@@ -929,7 +929,8 @@ def main():
     if SINGLE_FILE:
         # Single-file mode: do NOT use --rebase. Always a fresh run dir.
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        MEDS_OUTPUT_DIR = str(Path(BASE_OUTPUT_DIR) / f"run_{ts}")
+        # MEDS_OUTPUT_DIR = str(Path(BASE_OUTPUT_DIR) / f"run_{ts}")
+        MEDS_OUTPUT_DIR = f'{BASE_OUTPUT_DIR}/run_{ts}]'
     else:
         # Directory mode: use the base; run_preprocessing will pass --rebase=True
         MEDS_OUTPUT_DIR = BASE_OUTPUT_DIR
