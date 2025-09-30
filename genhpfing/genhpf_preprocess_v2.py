@@ -438,15 +438,18 @@ class GenHPFPreprocessor:
 
     def _write_pid_files(self, pid: int):
         pgid = os.getpgid(pid)
-        pid_path  = Path(self.meds_output_dir) / "genhpf_current.pid"
-        pgid_path = Path(self.meds_output_dir) / "genhpf_current.pgid"
+        # Write state files under the log directory (always exists)
+        state_dir = self.log_dir
+        state_dir.mkdir(parents=True, exist_ok=True)
+        pid_path  = state_dir / "genhpf_current.pid"
+        pgid_path = state_dir / "genhpf_current.pgid"
         pid_path.write_text(str(pid))
         pgid_path.write_text(str(pgid))
-        self.logger.info(f"Child PID={pid}, PGID={pgid} (saved to {pid_path.name}/{pgid_path.name})")
+        self.logger.info(f"Child PID={pid}, PGID={pgid} (saved to {pid_path} / {pgid_path})")
 
     def _remove_pid_files(self):
         for name in ("genhpf_current.pid", "genhpf_current.pgid"):
-            p = Path(self.meds_output_dir) / name
+            p = self.log_dir / name
             try:
                 p.unlink()
             except FileNotFoundError:
@@ -503,9 +506,10 @@ class GenHPFPreprocessor:
             pass
 
     def _cleanup_scratch(self):
-        # Clean our scratch/batch temp dirs (safe, they’re recreated on next run)
+        # Clean our scratch/batch temp dirs under the output dir
+        base = Path(self.meds_output_dir)
         for d in ("_scratch_tmp", "_tmp_batches"):
-            p = Path(self.meds_output_dir) / d
+            p = base / d
             if p.exists():
                 try:
                     shutil.rmtree(p)
@@ -570,8 +574,8 @@ class GenHPFPreprocessor:
         self.last_progress_time = self.start_time
 
         # --- redirect all temp files from /tmp to a big, known folder on the output volume ---
-        # scratch_dir = Path(self.meds_output_dir) / "_scratch_tmp"
-        scratch_dir = Path("/opt/data/commonfilesharePHI/MEDS_shared/ckravit/genhpf/output/") / "_scratch_tmp"
+        scratch_dir = Path(self.meds_output_dir) / "_scratch_tmp"
+        # scratch_dir = Path("/opt/data/commonfilesharePHI/MEDS_shared/ckravit/genhpf/output/") / "_scratch_tmp"
         scratch_dir.mkdir(parents=True, exist_ok=True)
 
         # Build child environment
