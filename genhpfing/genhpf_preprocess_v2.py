@@ -395,19 +395,28 @@ class GenHPFPreprocessor:
             pass
 
     def _popen_with_own_group(self, command, stdout_handle=None, env=None):
-        """
-        Launch child in its own process group/session so we can kill the whole tree.
-        """
-        cmd = command  # if you construct it elsewhere, keep as-is
-        return subprocess.Popen(
-            cmd,
-            stdout=stdout_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,   # <- creates a new process group (POSIX)
-            env=env,
-            text=True,                # keep if you want str lines; otherwise drop
-            bufsize=1,                # line-buffered if text=True
-        )
+        """Start subprocess in its own process group for group termination"""
+        if os.name == "nt":
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            return subprocess.Popen(
+                command,
+                stdout=stdout_handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                creationflags=CREATE_NEW_PROCESS_GROUP,
+                env=env,
+            )
+        else:
+            return subprocess.Popen(
+                command,
+                stdout=stdout_handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                preexec_fn=os.setsid,   # or start_new_session=True on 3.8+
+                env=env,
+            )
 
 
     # def _terminate_process_group(self, process: subprocess.Popen):
@@ -429,15 +438,15 @@ class GenHPFPreprocessor:
 
     def _write_pid_files(self, pid: int):
         pgid = os.getpgid(pid)
-        pid_path = Path(self.output_dir) / "genhpf_current.pid"
-        pgid_path = Path(self.output_dir) / "genhpf_current.pgid"
+        pid_path  = Path(self.meds_output_dir) / "genhpf_current.pid"
+        pgid_path = Path(self.meds_output_dir) / "genhpf_current.pgid"
         pid_path.write_text(str(pid))
         pgid_path.write_text(str(pgid))
         self.logger.info(f"Child PID={pid}, PGID={pgid} (saved to {pid_path.name}/{pgid_path.name})")
 
     def _remove_pid_files(self):
         for name in ("genhpf_current.pid", "genhpf_current.pgid"):
-            p = Path(self.output_dir) / name
+            p = Path(self.meds_output_dir) / name
             try:
                 p.unlink()
             except FileNotFoundError:
@@ -496,7 +505,7 @@ class GenHPFPreprocessor:
     def _cleanup_scratch(self):
         # Clean our scratch/batch temp dirs (safe, they’re recreated on next run)
         for d in ("_scratch_tmp", "_tmp_batches"):
-            p = Path(self.output_dir) / d
+            p = Path(self.meds_output_dir) / d
             if p.exists():
                 try:
                     shutil.rmtree(p)
@@ -562,34 +571,26 @@ class GenHPFPreprocessor:
 
         # --- redirect all temp files from /tmp to a big, known folder on the output volume ---
         # scratch_dir = Path(self.meds_output_dir) / "_scratch_tmp"
-        scratch_dir = "/opt/data/workingdir/ckravit/MEDS/MEDS220/genHPF/output/_scratch_tmp"
+        scratch_dir = Path("/opt/data/commonfilesharePHI/MEDS_shared/ckravit/genhpf/output/") / "_scratch_tmp"
         scratch_dir.mkdir(parents=True, exist_ok=True)
 
         # Build child environment
         child_env = os.environ.copy()
         # Generic temp vars respected by Python/tempfile and many libs
         child_env["TMPDIR"] = str(scratch_dir)
-        child_env["TEMP"] = str(scratch_dir)
-        child_env["TMP"] = str(scratch_dir)
-        # Arrow spill directory (used by PyArrow, which Polars often leverages under the hood)
+        child_env["TEMP"]  = str(scratch_dir)
+        child_env["TMP"]   = str(scratch_dir)
+        # Arrow spill directory (used by PyArrow/Polars)
         child_env["ARROW_TMPDIR"] = str(scratch_dir)
 
         # Optional: fail fast if free space looks too low (tune threshold)
         if shutil.disk_usage(scratch_dir).free < 20 * 1024**3:  # 20 GB
             self.logger.error(f"Not enough free space in {scratch_dir}; need >= 20 GB.")
-            return
+            return False, process_log
+
 
         try:
             with open(process_log, "w") as log_file:
-                # --- build child env (scratch away from /tmp) ---
-                scratch_dir = Path(self.output_dir) / "_scratch_tmp"
-                scratch_dir.mkdir(parents=True, exist_ok=True)
-                child_env = os.environ.copy()
-                child_env["TMPDIR"] = str(scratch_dir)
-                child_env["TEMP"] = str(scratch_dir)
-                child_env["TMP"] = str(scratch_dir)
-                child_env["ARROW_TMPDIR"] = str(scratch_dir)
-
                 # Launch child in its own session/group
                 process = self._popen_with_own_group(
                     command,
